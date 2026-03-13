@@ -21,7 +21,7 @@ jobs:
       bump_type: ${{ steps.dry-run.outputs.bump_type }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # Full history for tag detection
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -93,7 +93,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
@@ -115,14 +115,14 @@ jobs:
 
       - name: Upload binary (Unix)
         if: runner.os != 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: cartographer-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/cartographer
 
       - name: Upload binary (Windows)
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: cartographer-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/cartographer.exe
@@ -134,7 +134,7 @@ jobs:
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
