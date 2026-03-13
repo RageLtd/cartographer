@@ -1,0 +1,27 @@
+[package]
+name = "cartographer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cartographer"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.2", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tree-sitter = "0.26"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-rust = "0.24"
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+sonic-rs = "0.5"
+schemars = "1.2"
+thiserror = "2"
+md-5 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
