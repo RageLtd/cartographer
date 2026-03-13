@@ -151,16 +151,16 @@ jobs:
         run: ls -lh dist/
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ needs.version-bump.outputs.new_version }}
-          name: v${{ needs.version-bump.outputs.new_version }}
-          files: |
-            dist/cartographer-darwin-arm64
-            dist/cartographer-darwin-x64
-            dist/cartographer-linux-x64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ needs.version-bump.outputs.new_version }}" \
+            --title "v${{ needs.version-bump.outputs.new_version }}" \
+            --generate-notes \
+            dist/cartographer-darwin-arm64 \
+            dist/cartographer-darwin-x64 \
+            dist/cartographer-linux-x64 \
             dist/cartographer-windows-x64.exe
-          generate_release_notes: true
 
       - name: Notify marketplace
         env:
