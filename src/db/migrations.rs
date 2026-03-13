@@ -151,14 +151,19 @@ pub fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
         )",
     )?;
 
-    let current_version: i64 = db
-        .query_row("SELECT COALESCE(MAX(version), 0) FROM migrations", [], |row| {
-            row.get(0)
-        })?;
+    let current_version: i64 = db.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM migrations",
+        [],
+        |row| row.get(0),
+    )?;
 
     for migration in MIGRATIONS {
         if migration.version > current_version {
-            tracing::info!("Running migration {}: {}", migration.version, migration.description);
+            tracing::info!(
+                "Running migration {}: {}",
+                migration.version,
+                migration.description
+            );
             let tx = db.unchecked_transaction()?;
             (migration.up)(&tx)?;
             tx.execute(

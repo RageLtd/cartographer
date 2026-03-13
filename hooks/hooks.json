@@ -11,6 +11,26 @@
             "statusMessage": "Setting up Cartographer..."
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.cartographer/bin/cartographer hook:context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.cartographer/bin/cartographer hook:prompt"
+          }
+        ]
       }
     ]
   }

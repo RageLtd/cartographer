@@ -17,7 +17,7 @@ pub fn resolve_ts_js_import(specifier: &str, from_file: &str) -> Option<String> 
 
     // Exact match with known extension
     for ext in TS_JS_EXTENSIONS {
-        if candidate.to_str().map_or(false, |s| s.ends_with(ext)) && candidate.exists() {
+        if candidate.to_str().is_some_and(|s| s.ends_with(ext)) && candidate.exists() {
             return candidate.to_str().map(|s| s.to_string());
         }
     }
@@ -97,6 +97,77 @@ pub fn resolve_rust_mod_decl(mod_name: &str, from_file: &str) -> Option<String> 
     }
 
     None
+}
+
+/// Resolve a Ruby require or require_relative to a file path.
+pub fn resolve_ruby_require(specifier: &str, from_file: &str, is_relative: bool) -> Option<String> {
+    if is_relative {
+        let dir = Path::new(from_file).parent()?;
+        let candidate = dir.join(specifier);
+        let candidate = normalize_path(&candidate);
+
+        // Try exact match
+        if candidate.exists() {
+            return candidate.to_str().map(|s| s.to_string());
+        }
+        // Try with .rb extension
+        let with_rb = append_ext(&candidate, ".rb");
+        if with_rb.exists() {
+            return with_rb.to_str().map(|s| s.to_string());
+        }
+    }
+    // For bare `require`, we don't resolve (external gems)
+    None
+}
+
+/// Resolve an Elixir module name to a file path.
+/// Converts `MyApp.Foo.Bar` to `lib/my_app/foo/bar.ex` relative to the project root.
+pub fn resolve_elixir_module(module_name: &str, from_file: &str) -> Option<String> {
+    // Find the project root (directory containing mix.exs)
+    let mut dir = Path::new(from_file).parent()?;
+    let project_root;
+    loop {
+        if dir.join("mix.exs").exists() {
+            project_root = dir;
+            break;
+        }
+        dir = dir.parent()?;
+    }
+
+    // Convert module name to path: MyApp.Foo.Bar -> my_app/foo/bar
+    let path_part: String = module_name
+        .split('.')
+        .map(to_snake_case)
+        .collect::<Vec<_>>()
+        .join("/");
+
+    // Try lib/ directory
+    let as_file = project_root.join("lib").join(format!("{path_part}.ex"));
+    if as_file.exists() {
+        return as_file.to_str().map(|s| s.to_string());
+    }
+
+    // Try without the top-level app name prefix
+    if let Some(rest) = path_part.split_once('/') {
+        let as_file = project_root.join("lib").join(format!("{}.ex", rest.1));
+        if as_file.exists() {
+            return as_file.to_str().map(|s| s.to_string());
+        }
+    }
+
+    None
+}
+
+/// Convert a PascalCase string to snake_case.
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            result.push('_');
+        }
+        result.push(ch.to_lowercase().next().unwrap_or(ch));
+    }
+    result
 }
 
 fn append_ext(path: &Path, ext: &str) -> PathBuf {

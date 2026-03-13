@@ -1,5 +1,9 @@
+pub mod elixir;
 pub mod extractor;
 pub mod resolver;
+pub mod ruby;
+pub mod rust_ext;
+pub mod ts_js;
 
 use std::fs;
 use std::path::Path;
@@ -9,7 +13,10 @@ use md5::{Digest, Md5};
 use crate::constants::LANGUAGE_CONFIG;
 use crate::types::FileParseResult;
 
-use self::extractor::{extract_rust, extract_ts_js};
+use self::elixir::extract_elixir;
+use self::ruby::extract_ruby;
+use self::rust_ext::extract_rust;
+use self::ts_js::extract_ts_js;
 
 pub fn parse_file(file_path: &str, crate_root: Option<&str>) -> Result<FileParseResult, String> {
     let ext = Path::new(file_path)
@@ -22,14 +29,16 @@ pub fn parse_file(file_path: &str, crate_root: Option<&str>) -> Result<FileParse
         .get(ext.as_str())
         .ok_or_else(|| format!("Unsupported file extension: {ext}"))?;
 
-    let content = fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read {file_path}: {e}"))?;
+    let content =
+        fs::read_to_string(file_path).map_err(|e| format!("Failed to read {file_path}: {e}"))?;
 
     let language_fn: tree_sitter::Language = match config.language {
         "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
         "javascript" => tree_sitter_javascript::LANGUAGE.into(),
         "rust" => tree_sitter_rust::LANGUAGE.into(),
+        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
+        "elixir" => tree_sitter_elixir::LANGUAGE.into(),
         other => return Err(format!("Unknown language: {other}")),
     };
 
@@ -42,10 +51,16 @@ pub fn parse_file(file_path: &str, crate_root: Option<&str>) -> Result<FileParse
         .parse(&content, None)
         .ok_or_else(|| format!("Failed to parse {file_path}"))?;
 
-    let (imports, symbols) = if config.language == "rust" {
-        extract_rust(file_path, &content, tree.root_node(), crate_root.unwrap_or(file_path))
-    } else {
-        extract_ts_js(file_path, &content, tree.root_node(), config.language)
+    let (imports, symbols) = match config.language {
+        "rust" => extract_rust(
+            file_path,
+            &content,
+            tree.root_node(),
+            crate_root.unwrap_or(file_path),
+        ),
+        "ruby" => extract_ruby(file_path, &content, tree.root_node()),
+        "elixir" => extract_elixir(file_path, &content, tree.root_node()),
+        _ => extract_ts_js(file_path, &content, tree.root_node(), config.language),
     };
 
     Ok(FileParseResult {
@@ -62,7 +77,7 @@ pub fn hash_content(content: &str) -> String {
 }
 
 pub fn hash_file(file_path: &str) -> Result<String, String> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read {file_path}: {e}"))?;
+    let content =
+        fs::read_to_string(file_path).map_err(|e| format!("Failed to read {file_path}: {e}"))?;
     Ok(hash_content(&content))
 }

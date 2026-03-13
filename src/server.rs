@@ -3,30 +3,24 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    AnnotateAble, CallToolResult, Content, ListResourcesResult, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo,
-};
-use rmcp::schemars;
-use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
+use rmcp::model::{CallToolResult, Content};
+use rmcp::{tool, tool_router, ErrorData as McpError};
 use rusqlite::Connection;
-use serde::Deserialize;
 
 use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
+use crate::db::graph::{find_cycles, get_file_detail, search_files, walk_import_graph};
 use crate::db::queries::{
-    get_import_count, get_last_git_status, get_project_stats, get_tracked_files, replace_imports,
-    save_git_status, search_files, upsert_file, walk_import_graph,
+    get_file_count, get_import_count, get_language_counts, get_last_git_status, replace_imports,
+    save_git_status, upsert_file,
 };
-use crate::indexer::{
-    diff_git_status, full_index, get_current_git_status, incremental_index,
-};
+use crate::indexer::{diff_git_status, full_index, get_current_git_status, incremental_index};
 use crate::parser::{hash_file, parse_file};
+use crate::server_types::{FileInfoInput, ParseFileInput, ProjectInput, QueryInput, SearchInput};
 
 #[derive(Clone)]
 pub struct CartographerServer {
-    db: Arc<Mutex<Connection>>,
-    tool_router: ToolRouter<Self>,
+    pub(crate) db: Arc<Mutex<Connection>>,
+    pub(crate) tool_router: ToolRouter<Self>,
 }
 
 impl CartographerServer {
@@ -36,41 +30,11 @@ impl CartographerServer {
             tool_router: Self::tool_router(),
         }
     }
+
+    pub fn db(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.db.lock().map_err(|e| e.to_string())
+    }
 }
-
-// ============================================================================
-// Tool input schemas
-// ============================================================================
-
-#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
-struct ParseFileInput {
-    /// Absolute path to the file to parse
-    file_path: String,
-    /// Project root directory (absolute path)
-    project: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
-struct ProjectInput {
-    /// Project root directory (absolute path)
-    project: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
-struct QueryInput {
-    /// Project root directory (absolute path)
-    project: String,
-    /// File paths or search terms to start the graph walk from
-    entry_points: Vec<String>,
-    /// Maximum hops to traverse (1-5, default 2)
-    max_depth: Option<i64>,
-    /// Maximum files to return (1-50, default 20)
-    max_results: Option<i64>,
-}
-
-// ============================================================================
-// Tool implementations
-// ============================================================================
 
 #[tool_router]
 impl CartographerServer {
@@ -82,7 +46,10 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ParseFileInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self.db.lock().map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let result = match parse_file(&input.file_path, None) {
             Ok(r) => r,
@@ -163,7 +130,10 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self.db.lock().map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let last_status = get_last_git_status(&db, &input.project)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -208,11 +178,11 @@ impl CartographerServer {
         name = "cartographer_query",
         description = "Walk the import graph outward from entry point files. Returns dependencies and dependents up to a configurable depth. Entry points can be absolute paths or search terms."
     )]
-    fn query(
-        &self,
-        Parameters(input): Parameters<QueryInput>,
-    ) -> Result<CallToolResult, McpError> {
-        let db = self.db.lock().map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    fn query(&self, Parameters(input): Parameters<QueryInput>) -> Result<CallToolResult, McpError> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut resolved_paths: Vec<String> = Vec::new();
         for entry in &input.entry_points {
@@ -277,7 +247,10 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self.db.lock().map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let (indexed, skipped) = full_index(&db, &input.project, &input.project)
             .map_err(|e| McpError::internal_error(e, None))?;
@@ -295,29 +268,30 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self.db.lock().map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let files = get_tracked_files(&db, &input.project)
+        let total_files = get_file_count(&db, &input.project)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let import_count = get_import_count(&db, &input.project)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let mut languages: HashMap<String, usize> = HashMap::new();
-        for f in &files {
-            *languages.entry(f.language.clone()).or_insert(0) += 1;
-        }
+        let languages = get_language_counts(&db, &input.project)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct StatsOut {
-            total_files: usize,
+            total_files: i64,
             total_import_edges: i64,
             languages: HashMap<String, usize>,
         }
 
         let json = sonic_rs::to_string_pretty(&StatsOut {
-            total_files: files.len(),
+            total_files,
             total_import_edges: import_count,
             languages,
         })
@@ -325,74 +299,189 @@ impl CartographerServer {
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
-}
 
-// ============================================================================
-// ServerHandler — resources + server info
-// ============================================================================
-
-#[tool_handler]
-impl ServerHandler for CartographerServer {
-    fn get_info(&self) -> ServerInfo {
-        let capabilities = ServerCapabilities::builder()
-            .enable_tools()
-            .enable_resources()
-            .build();
-
-        ServerInfo::new(capabilities)
-            .with_instructions("Cartographer: codebase structure mapping via Tree-sitter AST parsing")
-    }
-
-    async fn list_resources(
+    #[tool(
+        name = "cartographer_search",
+        description = "Search indexed files by path or symbol name using full-text search. Returns matching files with their symbols, visibility, and doc comments."
+    )]
+    fn search(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ListResourcesResult, McpError> {
-        let resource = RawResource::new("cartographer://project", "Project Index Overview")
-            .with_description("List all indexed projects and their file counts")
-            .with_mime_type("application/json")
-            .no_annotation();
+        Parameters(input): Parameters<SearchInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(ListResourcesResult::with_all_items(vec![resource]))
-    }
+        let limit = input.limit.unwrap_or(10);
+        let results = search_files(&db, &input.project, &input.query, limit)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-    async fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        if request.uri == "cartographer://project" {
-            let db = self
-                .db
-                .lock()
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-            let stats = get_project_stats(&db)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-            #[derive(serde::Serialize)]
-            struct ProjectRow {
-                project: String,
-                count: i64,
-            }
-
-            let rows: Vec<ProjectRow> = stats
-                .into_iter()
-                .map(|(project, count)| ProjectRow { project, count })
-                .collect();
-
-            let json = sonic_rs::to_string_pretty(&rows)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-            Ok(ReadResourceResult::new(vec![ResourceContents::text(
-                json,
-                "cartographer://project",
-            )]))
-        } else {
-            Err(McpError::resource_not_found(
-                "resource_not_found",
-                Some(format!("Unknown resource: {}", request.uri).into()),
-            ))
+        if results.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No matching files found.",
+            )]));
         }
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SearchOut {
+            file_path: String,
+            relative_path: String,
+            symbols: Vec<crate::types::Symbol>,
+        }
+
+        let out: Vec<SearchOut> = results
+            .into_iter()
+            .map(|(path, symbols)| {
+                let relative_path = path
+                    .strip_prefix(&input.project)
+                    .unwrap_or(&path)
+                    .trim_start_matches('/')
+                    .to_string();
+                SearchOut {
+                    file_path: path,
+                    relative_path,
+                    symbols,
+                }
+            })
+            .collect();
+
+        let json = sonic_rs::to_string_pretty(&out)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "cartographer_get_file_info",
+        description = "Get detailed information about a specific file: its symbols (with visibility, signatures, doc comments), what it imports, and what imports it."
+    )]
+    fn get_file_info(
+        &self,
+        Parameters(input): Parameters<FileInfoInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let detail = get_file_detail(&db, &input.project, &input.file_path)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let detail = match detail {
+            Some(d) => d,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "File not found in index: {}",
+                    input.file_path
+                ))]));
+            }
+        };
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ImportOut {
+            target: String,
+            symbols: Vec<String>,
+        }
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct DependentOut {
+            source: String,
+            symbols: Vec<String>,
+        }
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct FileInfoOut {
+            file_path: String,
+            relative_path: String,
+            language: String,
+            symbols: Vec<crate::types::Symbol>,
+            imports: Vec<ImportOut>,
+            dependents: Vec<DependentOut>,
+        }
+
+        let relative_path = detail
+            .file_path
+            .strip_prefix(&input.project)
+            .unwrap_or(&detail.file_path)
+            .trim_start_matches('/')
+            .to_string();
+
+        let out = FileInfoOut {
+            file_path: detail.file_path,
+            relative_path,
+            language: detail.language,
+            symbols: detail.symbols,
+            imports: detail
+                .imports
+                .into_iter()
+                .map(|(target, symbols)| ImportOut { target, symbols })
+                .collect(),
+            dependents: detail
+                .dependents
+                .into_iter()
+                .map(|(source, symbols)| DependentOut { source, symbols })
+                .collect(),
+        };
+
+        let json = sonic_rs::to_string_pretty(&out)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "cartographer_find_cycles",
+        description = "Detect circular dependencies in the import graph. Returns all dependency cycles found in the project."
+    )]
+    fn find_cycles_tool(
+        &self,
+        Parameters(input): Parameters<ProjectInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let cycles = find_cycles(&db, &input.project)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if cycles.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No circular dependencies found.",
+            )]));
+        }
+
+        #[derive(serde::Serialize)]
+        struct CycleOut {
+            cycle: Vec<String>,
+            length: usize,
+        }
+
+        let out: Vec<CycleOut> = cycles
+            .into_iter()
+            .map(|c| {
+                let length = c.len() - 1; // exclude the repeated closing element
+                let cycle: Vec<String> = c
+                    .into_iter()
+                    .map(|p| {
+                        p.strip_prefix(&input.project)
+                            .unwrap_or(&p)
+                            .trim_start_matches('/')
+                            .to_string()
+                    })
+                    .collect();
+                CycleOut { cycle, length }
+            })
+            .collect();
+
+        let json = sonic_rs::to_string_pretty(&out)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }

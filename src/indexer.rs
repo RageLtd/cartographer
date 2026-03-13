@@ -6,7 +6,9 @@ use std::process::Command;
 use rusqlite::Connection;
 
 use crate::constants::{SKIP_DIRS, SUPPORTED_EXTENSIONS};
-use crate::db::queries::{remove_file, replace_imports, save_git_status, upsert_file};
+use crate::db::queries::{
+    get_file_hash, remove_file, replace_imports, save_git_status, upsert_file,
+};
 use crate::parser::{hash_file, parse_file};
 
 // ============================================================================
@@ -98,8 +100,7 @@ pub fn full_index(
     }
 
     let status = get_current_git_status(project_root);
-    save_git_status(db, project, &status)
-        .map_err(|e| format!("Failed to save git status: {e}"))?;
+    save_git_status(db, project, &status).map_err(|e| format!("Failed to save git status: {e}"))?;
 
     Ok((indexed, skipped))
 }
@@ -147,10 +148,25 @@ pub fn incremental_index(
 // ============================================================================
 
 pub fn index_single_file(db: &Connection, project: &str, file_path: &str) -> Result<(), String> {
-    let result = parse_file(file_path, None)?;
     let hash = hash_file(file_path)?;
-    upsert_file(db, project, file_path, &result.language, &result.symbols, &hash)
-        .map_err(|e| format!("Failed to upsert {file_path}: {e}"))?;
+
+    // Skip re-parsing if the file content hasn't changed
+    if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path) {
+        if existing_hash == hash {
+            return Ok(());
+        }
+    }
+
+    let result = parse_file(file_path, None)?;
+    upsert_file(
+        db,
+        project,
+        file_path,
+        &result.language,
+        &result.symbols,
+        &hash,
+    )
+    .map_err(|e| format!("Failed to upsert {file_path}: {e}"))?;
     replace_imports(db, project, file_path, &result.imports)
         .map_err(|e| format!("Failed to replace imports for {file_path}: {e}"))?;
     Ok(())

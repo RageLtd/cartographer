@@ -14,6 +14,8 @@ cargo build --release    # Build (release)
 cargo run                # Run MCP server (stdio transport)
 cargo test               # Run all tests
 cargo check              # Type-check without building
+cargo clippy             # Lint (must pass with zero warnings)
+cargo fmt                # Format code
 ```
 
 ## Architecture
@@ -21,21 +23,29 @@ cargo check              # Type-check without building
 ### Data Flow
 
 ```
-File path → parser/extractor.rs (Tree-sitter AST) → db/queries.rs (SQLite upsert)
-                                                          ↓
-Agent query → db/queries.rs (recursive CTE walk) → RelevantFile[]
+File path → parser/{ts_js,rust_ext,ruby,elixir}.rs (Tree-sitter AST) → db/queries.rs (SQLite upsert)
+                                                                              ↓
+Agent query → db/graph.rs (recursive CTE walk) → RelevantFile[]
 ```
 
 ### Module Layout
 
-- **`src/main.rs`** — Entry point. Creates `~/.cartographer/` data dir, opens DB, runs migrations, starts MCP server on stdio transport.
-- **`src/server.rs`** — `CartographerServer` with `#[tool_router]` (5 tools) and `ServerHandler` impl (1 resource). Uses `Arc<Mutex<Connection>>` for thread-safe DB access.
-- **`src/parser/extractor.rs`** — Core AST logic. `extract_ts_js()` and `extract_rust()` walk tree-sitter parse trees to extract import edges and symbol info (signatures, doc comments, visibility). Grammars are compiled into the binary.
-- **`src/parser/resolver.rs`** — Import specifier resolution. `resolve_ts_js_import()` handles relative imports with extension/index probing. `resolve_rust_module()` handles `crate::`/`self::`/`super::` paths. Bare/external specifiers are intentionally skipped.
+- **`src/main.rs`** — Entry point. Dispatches CLI subcommands (`hook:context`, `hook:prompt`) or starts MCP server on stdio. Creates `~/.cartographer/` data dir, opens DB, runs migrations.
+- **`src/cli.rs`** — CLI hook handlers. `hook_context()` injects graph-first guidance on SessionStart. `hook_prompt()` extracts file mentions from user prompts, looks up their graph neighborhood via `get_file_detail()`, and injects impact warnings + dependency context.
+- **`src/server.rs`** — `CartographerServer` with `#[tool_router]` (8 tools). Uses `Arc<Mutex<Connection>>` for thread-safe DB access.
+- **`src/server_types.rs`** — Tool input schema structs (`ParseFileInput`, `QueryInput`, etc.).
+- **`src/handler.rs`** — `ServerHandler` impl for `CartographerServer` (server info, resources).
 - **`src/parser/mod.rs`** — `parse_file()` dispatch (extension → grammar → extract), `hash_file()`, `hash_content()`.
-- **`src/indexer.rs`** — `full_index()` walks the file tree; `incremental_index()` re-parses modified files and removes deleted ones. `diff_git_status()` compares current `git status --porcelain` against the last stored snapshot.
-- **`src/db/queries.rs`** — All SQLite operations: file CRUD, import edge replacement, graph walking (`walk_import_graph` via recursive CTE), FTS5 search (`search_files`), git state persistence.
-- **`src/db/mod.rs`** — Re-exports `migrations`, `queries`, and `setup` submodules.
+- **`src/parser/extractor.rs`** — Shared AST helpers: `strip_quotes()`, `get_doc_comment()`, `get_signature()`.
+- **`src/parser/ts_js.rs`** — TypeScript/JavaScript/TSX/JSX extractor. Handles imports, exports, classes, functions, interfaces, enums, type aliases.
+- **`src/parser/rust_ext.rs`** — Rust extractor. Handles `use`/`mod` declarations, structs, enums, traits, impls, macros, visibility modifiers.
+- **`src/parser/ruby.rs`** — Ruby extractor. Handles `require`/`require_relative`, classes, modules, methods, singleton methods, constants, `attr_accessor`/`attr_reader`/`attr_writer`, `include`/`extend`/`prepend`.
+- **`src/parser/elixir.rs`** — Elixir extractor. Handles `defmodule`, `def`/`defp`, `defmacro`/`defmacrop`, `defstruct`, `alias`/`import`/`use`/`require`. Supports `@doc`/`@moduledoc` heredoc comments.
+- **`src/parser/resolver.rs`** — Import specifier resolution. `resolve_ts_js_import()` for relative JS/TS imports. `resolve_rust_module()` for `crate::`/`self::`/`super::` paths. `resolve_ruby_require()` for `require_relative`. `resolve_elixir_module()` for Elixir module-to-file mapping via `mix.exs` project root.
+- **`src/indexer.rs`** — `full_index()` walks the file tree (skips unchanged files via content hash); `incremental_index()` re-parses modified files and removes deleted ones. `diff_git_status()` compares against last stored snapshot.
+- **`src/db/queries.rs`** — File CRUD, import edge replacement, stats queries, git state persistence.
+- **`src/db/graph.rs`** — Graph walking (`walk_import_graph` via recursive CTE), cycle detection (`find_cycles`), file detail (`get_file_detail`), FTS5 search (`search_files`).
+- **`src/db/mod.rs`** — Re-exports `graph`, `migrations`, `queries`, and `setup` submodules.
 - **`src/db/setup.rs`** — Database creation with WAL mode, performance PRAGMAs, and migration runner.
 - **`src/db/migrations.rs`** — Versioned schema migrations. Three tables: `files`, `imports`, `git_state`. Plus indexes, FTS5 virtual table with sync triggers, and `symbol_names` column for clean text indexing.
 - **`src/constants.rs`** — `LANGUAGE_CONFIG` maps file extensions to tree-sitter grammars. `SKIP_DIRS` lists directories to ignore during indexing. `data_dir()` and `default_db_path()` for `~/.cartographer/map.db`.
@@ -47,9 +57,11 @@ Agent query → db/queries.rs (recursive CTE walk) → RelevantFile[]
 - **Graph queries use recursive CTEs** — walks both dependencies (what a file imports) and dependents (what imports it) bidirectionally.
 - **FTS5 for search** — content-synced virtual table with triggers. Indexes `file_path` and `symbol_names` (space-separated symbol names, not raw JSON).
 - **Symbols store JSON** — the `symbols` column in `files` is a JSON string of `Symbol[]`, parsed at read time. A separate `symbol_names` column stores clean text for FTS.
-- **Only relative/local imports are resolved** — bare specifiers (npm packages) and external Rust crates are intentionally skipped.
-- **Tree-sitter grammars compiled in** — TS/TSX, JS/JSX, and Rust grammars are statically linked. No runtime grammar loading.
+- **Only relative/local imports are resolved** — bare specifiers (npm packages), external Rust crates, and Ruby gems are intentionally skipped.
+- **Tree-sitter grammars compiled in** — TS/TSX, JS/JSX, Rust, Ruby, and Elixir grammars are statically linked. No runtime grammar loading.
+- **Content hash skip optimization** — `full_index()` checks file content hashes before parsing; unchanged files are skipped entirely.
 - **sonic-rs for JSON** — SIMD-accelerated JSON serialization/deserialization, API-compatible with serde_json.
+- **Tests in separate files** — Large test modules use `#[path = "..._tests.rs"]` to keep source files under 500 lines.
 
 ## Runtime & Tooling
 
