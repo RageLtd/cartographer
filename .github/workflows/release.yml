@@ -113,19 +113,27 @@ jobs:
         if: startsWith(matrix.platform, 'darwin')
         run: codesign --force --sign - target/${{ matrix.target }}/release/cartographer
 
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
+        run: cp target/${{ matrix.target }}/release/cartographer cartographer-${{ matrix.platform }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: copy target\${{ matrix.target }}\release\cartographer.exe cartographer-${{ matrix.platform }}.exe
+
       - name: Upload binary (Unix)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v5
         with:
           name: cartographer-${{ matrix.platform }}
-          path: target/${{ matrix.target }}/release/cartographer
+          path: cartographer-${{ matrix.platform }}
 
       - name: Upload binary (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v5
         with:
           name: cartographer-${{ matrix.platform }}
-          path: target/${{ matrix.target }}/release/cartographer.exe
+          path: cartographer-${{ matrix.platform }}.exe
 
   release:
     name: Create Release
