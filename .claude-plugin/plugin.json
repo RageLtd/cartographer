@@ -1,7 +1,7 @@
 {
   "name": "cartographer",
   "description": "Codebase structure mapping via Tree-sitter AST parsing. Builds import graphs and answers dependency queries.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": {
     "name": "RageLtd"
   },
