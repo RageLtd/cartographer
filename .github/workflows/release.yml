@@ -141,6 +141,8 @@ jobs:
     needs: [version-bump, build-binaries]
 
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
@@ -153,9 +155,10 @@ jobs:
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ needs.version-bump.outputs.new_version }}
         run: |
-          gh release create "v${{ needs.version-bump.outputs.new_version }}" \
-            --title "v${{ needs.version-bump.outputs.new_version }}" \
+          gh release create "v${NEW_VERSION}" \
+            --title "v${NEW_VERSION}" \
             --generate-notes \
             dist/cartographer-darwin-arm64 \
             dist/cartographer-darwin-x64 \
@@ -173,10 +176,12 @@ jobs:
             -f "client_payload[version]=$VERSION"
 
       - name: Release Summary
+        env:
+          NEW_VERSION: ${{ needs.version-bump.outputs.new_version }}
         run: |
           echo "## Release Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** v${{ needs.version-bump.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** v${NEW_VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Assets:**" >> $GITHUB_STEP_SUMMARY
           echo "- cartographer-darwin-arm64 (macOS M1/M2/M3)" >> $GITHUB_STEP_SUMMARY
