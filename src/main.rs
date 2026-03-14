@@ -2,6 +2,7 @@ mod cli;
 mod constants;
 mod db;
 mod handler;
+mod hooks;
 mod indexer;
 mod parser;
 mod server;
@@ -21,25 +22,9 @@ use crate::server::CartographerServer;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
-    // CLI subcommands (used by hooks)
     if args.len() > 1 {
-        match args[1].as_str() {
-            "hook:context" => {
-                cli::hook_context();
-                return Ok(());
-            }
-            "hook:prompt" => {
-                cli::hook_prompt();
-                return Ok(());
-            }
-            _ => {
-                eprintln!("Unknown command: {}", args[1]);
-                eprintln!("Usage: cartographer              # Start MCP server");
-                eprintln!("       cartographer hook:context  # SessionStart hook");
-                eprintln!("       cartographer hook:prompt   # UserPromptSubmit hook");
-                std::process::exit(1);
-            }
-        }
+        cli::run(&args[1]);
+        return Ok(());
     }
 
     // Default: run MCP server
@@ -48,10 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
-    // Ensure data directory exists
     fs::create_dir_all(data_dir()?)?;
 
-    // Create and migrate database
     let db_path = default_db_path()?;
     let db_path_str = db_path
         .to_str()
