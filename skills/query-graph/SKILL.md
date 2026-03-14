@@ -1,41 +1,42 @@
 # Query Import Graph
 
-Query the import graph to find dependencies and dependents of files.
+Walk the import graph from entry point files to find dependencies and dependents.
 
 ## When to Use
 - To understand what a file depends on (its imports, transitive dependencies)
 - To find what files would be affected by changing a given file (dependents)
 - To trace import chains and understand module boundaries
 - When planning refactors that involve moving or renaming files
+- **Before using Grep or Glob** for structural/dependency questions
 
 ## How to Use
 
-1. Ensure the project is indexed first (use `cartographer_index_project` if needed)
+1. Ensure the project is indexed (use `cartographer_index_project` if needed)
 2. Call `cartographer_query` with:
-   - `file_path`: The file to query from
-   - `direction`: `"dependencies"` (what it imports) or `"dependents"` (what imports it)
-   - `depth`: How many levels to traverse (default: 3)
+   - `entry_points`: Array of file paths or search terms
+   - `max_depth`: How many levels to traverse (default: 3)
+   - `max_results`: Limit results (default: 50)
 
-## Example
+Entry points can be absolute paths OR search terms — the tool will resolve search terms via FTS.
+
+## Examples
 
 ```
 Find what src/server.rs depends on:
-→ cartographer_query({ "file_path": "src/server.rs", "direction": "dependencies", "depth": 3 })
+> cartographer_query({ "project": "/path/to/project", "entry_points": ["src/server.rs"] })
 
-Find what would be affected by changing src/types.rs:
-→ cartographer_query({ "file_path": "src/types.rs", "direction": "dependents", "depth": 3 })
+Find what would be affected by changing types.rs:
+> cartographer_query({ "project": "/path/to/project", "entry_points": ["types.rs"] })
+
+Search by symbol name:
+> cartographer_query({ "project": "/path/to/project", "entry_points": ["CartographerServer"] })
 ```
-
-## Other Useful Tools
-
-- `cartographer_search`: Full-text search across indexed file paths and symbol names
-- `cartographer_stats`: Show index statistics (file counts, edge counts)
-- `cartographer_get_file_info`: Get detailed info about a specific file (symbols, imports)
 
 ## Interpreting Results
 
 Each result includes:
-- **file_path**: Relative path from project root
+- **path**: Relative path from project root
+- **reason**: Why this file was included (e.g., "imports src/types.rs")
 - **depth**: How many import hops from the query file
 - **symbols**: Functions, types, and exports defined in the file
 

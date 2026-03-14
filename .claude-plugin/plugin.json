@@ -4,5 +4,7 @@
   "version": "0.3.2",
   "author": {
     "name": "RageLtd"
-  }
+  },
+  "commands_dir": "../commands",
+  "skills_dir": "../skills"
 }
