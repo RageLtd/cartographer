@@ -89,15 +89,12 @@ pub fn full_index(
     project_root: &str,
 ) -> Result<(usize, usize), String> {
     let files = walk_project_files(project_root);
-    let mut indexed = 0;
-    let mut skipped = 0;
-
-    for file_path in &files {
+    let (indexed, skipped) = files.iter().fold((0, 0), |(ok, err), file_path| {
         match index_single_file(db, project, file_path) {
-            Ok(()) => indexed += 1,
-            Err(_) => skipped += 1,
+            Ok(()) => (ok + 1, err),
+            Err(_) => (ok, err + 1),
         }
-    }
+    });
 
     let status = get_current_git_status(project_root);
     save_git_status(db, project, &status).map_err(|e| format!("Failed to save git status: {e}"))?;

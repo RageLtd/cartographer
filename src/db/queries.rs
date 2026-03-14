@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::types::{ImportEdge, Symbol};
 
@@ -51,14 +51,10 @@ pub fn get_file_hash(
 ) -> rusqlite::Result<Option<String>> {
     let mut stmt =
         db.prepare_cached("SELECT content_hash FROM files WHERE project = ?1 AND file_path = ?2")?;
-    let result = stmt.query_row(rusqlite::params![project, file_path], |row| {
+    stmt.query_row(rusqlite::params![project, file_path], |row| {
         row.get::<_, String>(0)
-    });
-    match result {
-        Ok(hash) => Ok(Some(hash)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e),
-    }
+    })
+    .optional()
 }
 
 pub fn remove_file(db: &Connection, project: &str, file_path: &str) -> rusqlite::Result<()> {
@@ -127,12 +123,7 @@ pub fn get_language_counts(
     let rows = stmt.query_map([project], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
     })?;
-    let mut map = HashMap::new();
-    for row in rows {
-        let (lang, count) = row?;
-        map.insert(lang, count);
-    }
-    Ok(map)
+    rows.collect::<rusqlite::Result<HashMap<_, _>>>()
 }
 
 pub fn get_import_count(db: &Connection, project: &str) -> rusqlite::Result<i64> {
@@ -160,12 +151,11 @@ pub fn get_last_git_status(
     project: &str,
 ) -> rusqlite::Result<HashMap<String, String>> {
     let mut stmt = db.prepare_cached("SELECT last_status FROM git_state WHERE project = ?1")?;
-    let result = stmt.query_row([project], |row| row.get::<_, String>(0));
-    match result {
-        Ok(json) => Ok(sonic_rs::from_str(&json).unwrap_or_default()),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(HashMap::new()),
-        Err(e) => Err(e),
-    }
+    Ok(stmt
+        .query_row([project], |row| row.get::<_, String>(0))
+        .optional()?
+        .and_then(|json| sonic_rs::from_str(&json).ok())
+        .unwrap_or_default())
 }
 
 pub fn save_git_status(

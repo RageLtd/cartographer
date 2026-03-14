@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
 use crate::types::{RelevantFile, Symbol};
@@ -72,11 +72,14 @@ pub fn walk_import_graph(
 
     let mut stmt = db.prepare(&sql)?;
 
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        Vec::with_capacity(entry_points.len() + 3);
     params.push(Box::new(project.to_string()));
-    for ep in entry_points {
-        params.push(Box::new(ep.clone()));
-    }
+    params.extend(
+        entry_points
+            .iter()
+            .map(|ep| Box::new(ep.clone()) as Box<dyn rusqlite::types::ToSql>),
+    );
     params.push(Box::new(max_depth));
     params.push(Box::new(max_results));
 
@@ -90,25 +93,22 @@ pub fn walk_import_graph(
         Ok((file_path, depth, reason, symbols_str))
     })?;
 
-    let mut results = Vec::new();
-    for row in rows {
+    rows.map(|row| {
         let (file_path, depth, reason, symbols_str) = row?;
         let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols_str).unwrap_or_default();
-        let relative_path = if let Some(stripped) = file_path.strip_prefix(project) {
-            stripped.trim_start_matches('/').to_string()
-        } else {
-            file_path.clone()
-        };
-        results.push(RelevantFile {
+        let relative_path = file_path
+            .strip_prefix(project)
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_else(|| file_path.clone());
+        Ok(RelevantFile {
             file_path,
             relative_path,
             reason,
             depth,
             symbols,
-        });
-    }
-
-    Ok(results)
+        })
+    })
+    .collect()
 }
 
 pub fn search_files(
@@ -135,14 +135,12 @@ pub fn search_files(
         Ok((file_path, symbols_str))
     })?;
 
-    let mut results = Vec::new();
-    for row in rows {
+    rows.map(|row| {
         let (file_path, symbols_str) = row?;
         let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols_str).unwrap_or_default();
-        results.push((file_path, symbols));
-    }
-
-    Ok(results)
+        Ok((file_path, symbols))
+    })
+    .collect()
 }
 
 // ============================================================================
@@ -227,14 +225,15 @@ pub fn get_file_detail(
     let mut stmt = db.prepare_cached(
         "SELECT language, symbols FROM files WHERE project = ?1 AND file_path = ?2",
     )?;
-    let file_row = stmt.query_row(rusqlite::params![project, file_path], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    });
+    let file_row = stmt
+        .query_row(rusqlite::params![project, file_path], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .optional()?;
 
     let (language, symbols_str) = match file_row {
-        Ok(r) => r,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-        Err(e) => return Err(e),
+        Some(r) => r,
+        None => return Ok(None),
     };
 
     let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols_str).unwrap_or_default();
@@ -248,7 +247,7 @@ pub fn get_file_detail(
             let syms_str: String = row.get(1)?;
             Ok((target, syms_str))
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(Result::ok)
         .map(|(target, syms_str)| {
             let syms: Vec<String> = sonic_rs::from_str(&syms_str).unwrap_or_default();
             (target, syms)
@@ -264,7 +263,7 @@ pub fn get_file_detail(
             let syms_str: String = row.get(1)?;
             Ok((source, syms_str))
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(Result::ok)
         .map(|(source, syms_str)| {
             let syms: Vec<String> = sonic_rs::from_str(&syms_str).unwrap_or_default();
             (source, syms)
