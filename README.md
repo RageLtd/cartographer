@@ -55,21 +55,43 @@ Adding a new language: add a tree-sitter grammar dependency, an entry to `LANGUA
 |----------|-------------|
 | `cartographer://project` | List all indexed projects and file counts |
 
+## Slash Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/carto:index` | Index the current project |
+| `/carto:deps <file>` | Show what a file depends on |
+| `/carto:impact <file>` | Blast radius analysis — what breaks if you change a file |
+| `/carto:search <query>` | Search files and symbols |
+| `/carto:cycles` | Find circular dependencies |
+| `/carto:stats` | Show index statistics |
+| `/carto:info <file>` | Detailed file info (symbols, imports, dependents) |
+
 ## Hooks
 
 Cartographer hooks into Claude Code sessions to provide structural context automatically:
 
-- **SessionStart** — Downloads/updates the binary, then injects graph-first navigation guidance and index status
-- **UserPromptSubmit** — Extracts file mentions from user prompts and injects their import graph neighborhood (imports + dependents)
+| Event | What it does |
+|-------|-------------|
+| **SessionStart** | Downloads/updates the binary, injects graph-first guidance and index status |
+| **UserPromptSubmit** | Extracts file mentions from prompts, injects their graph neighborhood |
+| **PreToolUse (Read)** | Injects imports/dependents context when Claude reads a file |
+| **PreToolUse (Edit/Write)** | Injects blast radius before Claude modifies a file |
+| **PostToolUse (Edit/Write/Bash)** | Tracks changed files via `git diff`, reports lines changed + dependents |
+| **PostCompact** | Re-injects structural summary of modified files after context compaction |
 
 ## CLI
 
 The binary doubles as both an MCP server and a CLI for hooks:
 
 ```bash
-cartographer              # Start MCP server (stdio transport)
-cartographer hook:context  # SessionStart hook
-cartographer hook:prompt   # UserPromptSubmit hook
+cartographer                # Start MCP server (stdio transport)
+cartographer hook:context    # SessionStart hook
+cartographer hook:prompt     # UserPromptSubmit hook
+cartographer hook:pre-read   # PreToolUse Read hook
+cartographer hook:pre-edit   # PreToolUse Edit/Write hook
+cartographer hook:post-edit  # PostToolUse Edit/Write/Bash hook
+cartographer hook:post-compact # PostCompact hook
 ```
 
 ## What It Stores

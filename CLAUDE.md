@@ -30,8 +30,9 @@ Agent query → db/graph.rs (recursive CTE walk) → RelevantFile[]
 
 ### Module Layout
 
-- **`src/main.rs`** — Entry point. Dispatches CLI subcommands (`hook:context`, `hook:prompt`) or starts MCP server on stdio. Creates `~/.cartographer/` data dir, opens DB, runs migrations.
-- **`src/cli.rs`** — CLI hook handlers. `hook_context()` injects graph-first guidance on SessionStart. `hook_prompt()` extracts file mentions from user prompts, looks up their graph neighborhood via `get_file_detail()`, and injects impact warnings + dependency context.
+- **`src/main.rs`** — Entry point. Delegates CLI subcommands to `cli::run()` or starts MCP server on stdio. Creates `~/.cartographer/` data dir, opens DB, runs migrations.
+- **`src/cli.rs`** — Thin CLI dispatcher. Routes hook subcommands (`hook:context`, `hook:prompt`, `hook:pre-read`, `hook:pre-edit`, `hook:post-edit`, `hook:post-compact`) to handlers in `hooks.rs`.
+- **`src/hooks.rs`** — All 6 hook handlers. `run_hook()` combinator handles stdin parsing and output. `hook_context()` (SessionStart), `hook_prompt()` (UserPromptSubmit file mention lookup), `hook_pre_read()`/`hook_pre_edit()` (PreToolUse graph context injection), `hook_post_edit()` (PostToolUse git diff tracking), `hook_post_compact()` (PostCompact structural context re-injection).
 - **`src/server.rs`** — `CartographerServer` with `#[tool_router]` (8 tools). Uses `Arc<Mutex<Connection>>` for thread-safe DB access.
 - **`src/server_types.rs`** — Tool input schema structs (`ParseFileInput`, `QueryInput`, etc.).
 - **`src/handler.rs`** — `ServerHandler` impl for `CartographerServer` (server info, resources).
