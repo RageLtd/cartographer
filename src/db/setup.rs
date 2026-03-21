@@ -6,6 +6,7 @@ pub fn create_database(path: &str) -> rusqlite::Result<Connection> {
     let db = Connection::open(path)?;
     db.execute_batch(
         "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -32000;
          PRAGMA temp_store = MEMORY;
