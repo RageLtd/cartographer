@@ -44,3 +44,6 @@ pub struct FileInfoInput {
     /// Project root directory (absolute path)
     pub project: String,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct EmptyInput {}

@@ -15,7 +15,7 @@ use crate::db::queries::{
 };
 use crate::indexer::{diff_git_status, full_index, get_current_git_status, incremental_index};
 use crate::parser::{hash_file, parse_file};
-use crate::server_types::{FileInfoInput, ParseFileInput, ProjectInput, QueryInput, SearchInput};
+use crate::server_types::{EmptyInput, FileInfoInput, ParseFileInput, ProjectInput, QueryInput, SearchInput};
 
 #[derive(Clone)]
 pub struct CartographerServer {
@@ -461,5 +461,19 @@ impl CartographerServer {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "cartographer_project_path",
+        description = "Get the current project's root directory path. Call this first if you need to know the project path for other Cartographer tools."
+    )]
+    fn project_path(
+        &self,
+        #[allow(unused)] Parameters(_input): Parameters<EmptyInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        Ok(CallToolResult::success(vec![Content::text(cwd)]))
     }
 }
