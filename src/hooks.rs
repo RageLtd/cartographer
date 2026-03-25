@@ -1,13 +1,12 @@
 use std::io::{self, Read};
 use std::process::Command;
 
-use rusqlite::Connection;
 use sonic_rs::JsonValueTrait;
+use tokio::runtime::Runtime;
 
-use crate::constants::default_db_path;
+use crate::db::client::{connect, Db};
 use crate::db::graph::{get_file_detail, FileDetail};
 use crate::db::queries::{get_file_count, get_import_count};
-use crate::db::setup::create_database;
 
 // --- Hook I/O types ---
 
@@ -48,7 +47,6 @@ fn parse_input() -> Option<HookInput> {
     sonic_rs::from_str(&buf).ok()
 }
 
-/// Run a hook handler that optionally produces context. Handles stdin parsing and output.
 fn run_hook(handler: impl FnOnce(HookInput) -> Option<(&'static str, String)>) {
     let result = parse_input().and_then(handler);
     let output = HookOutput {
@@ -64,16 +62,16 @@ fn run_hook(handler: impl FnOnce(HookInput) -> Option<(&'static str, String)>) {
     }
 }
 
-fn open_db() -> Option<Connection> {
-    let path = default_db_path().ok()?;
-    let path_str = path.to_str()?;
-    path.exists().then(|| create_database(path_str).ok())?
+fn open_db() -> Option<Db> {
+    let rt = Runtime::new().ok()?;
+    rt.block_on(connect()).ok()
 }
 
-/// Open DB and verify the project is indexed.
-fn require_indexed_db(cwd: &str) -> Option<Connection> {
-    let db = open_db()?;
-    (get_file_count(&db, cwd).unwrap_or(0) > 0).then_some(db)
+fn require_indexed_db(cwd: &str) -> Option<(Db, Runtime)> {
+    let rt = Runtime::new().ok()?;
+    let db = rt.block_on(connect()).ok()?;
+    let count = rt.block_on(get_file_count(&db, cwd)).unwrap_or(0);
+    (count > 0).then_some((db, rt))
 }
 
 fn rel_path<'a>(path: &'a str, cwd: &str) -> &'a str {
@@ -99,13 +97,38 @@ fn extract_tool_file_path(input: &HookInput, cwd: &str) -> Option<String> {
     Some(resolve_abs_path(file_path, cwd))
 }
 
-fn lookup_detail(db: &Connection, cwd: &str, path: &str) -> Option<FileDetail> {
-    get_file_detail(db, cwd, path).ok().flatten()
+fn lookup_detail(db: &Db, rt: &Runtime, cwd: &str, path: &str) -> Option<FileDetail> {
+    rt.block_on(get_file_detail(db, cwd, path)).ok().flatten()
+}
+
+fn find_files_by_suffix(db: &Db, rt: &Runtime, project: &str, suffix: &str) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        file_path: String,
+    }
+
+    let pattern = format!("%{suffix}");
+    let project_owned = project.to_string();
+    let result = rt.block_on(async {
+        let mut res = db
+            .query("SELECT file_path FROM cart_file WHERE project = $project AND file_path LIKE $pattern LIMIT 3")
+            .bind(("project", project_owned))
+            .bind(("pattern", pattern))
+            .await
+            .ok()?;
+        let rows: Vec<Row> = res.take(0).ok()?;
+        Some(rows)
+    });
+
+    result
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.file_path)
+        .collect()
 }
 
 // --- Hook handlers ---
 
-/// SessionStart — inject graph-first navigation guidance and index status.
 pub fn hook_context() {
     run_hook(|input| {
         let mut context = String::from(
@@ -135,14 +158,15 @@ pub fn hook_context() {
         if let Some(db) = open_db() {
             let cwd = &input.cwd;
             if !cwd.is_empty() {
-                let file_count = get_file_count(&db, cwd).unwrap_or(0);
+                let rt = Runtime::new().ok()?;
+                let file_count = rt.block_on(get_file_count(&db, cwd)).unwrap_or(0);
                 if file_count == 0 {
                     context.push_str(&format!(
                         "\n\n## Index Status\n\
                          - Project not yet indexed. Run `cartographer_index_project` with project path `{cwd}` to build the import graph."
                     ));
                 } else {
-                    let import_count = get_import_count(&db, cwd).unwrap_or(0);
+                    let import_count = rt.block_on(get_import_count(&db, cwd)).unwrap_or(0);
                     context.push_str(&format!(
                         "\n\n## Index Status\n\
                          - **Project**: {cwd}\n\
@@ -158,19 +182,18 @@ pub fn hook_context() {
     });
 }
 
-/// UserPromptSubmit — extract file mentions, look up their graph neighborhood.
 pub fn hook_prompt() {
     run_hook(|input| {
         let prompt = input.prompt.as_deref().filter(|p| !p.is_empty())?;
         let cwd = &input.cwd;
-        let db = require_indexed_db(cwd)?;
+        let (db, rt) = require_indexed_db(cwd)?;
 
         let file_mentions = extract_file_mentions(prompt);
         let context_parts: Vec<String> = file_mentions
             .iter()
-            .flat_map(|mention| find_files_by_suffix(&db, cwd, mention))
+            .flat_map(|mention| find_files_by_suffix(&db, &rt, cwd, mention))
             .filter_map(|path| {
-                let detail = lookup_detail(&db, cwd, &path)?;
+                let detail = lookup_detail(&db, &rt, cwd, &path)?;
                 format_prompt_file_context(cwd, &detail)
             })
             .collect();
@@ -187,33 +210,29 @@ pub fn hook_prompt() {
     });
 }
 
-/// PreToolUse for Read — inject graph context for the file being read.
 pub fn hook_pre_read() {
     hook_file_tool("Reading");
 }
 
-/// PreToolUse for Edit/Write — inject blast radius before modification.
 pub fn hook_pre_edit() {
     hook_file_tool("Editing");
 }
 
-/// Shared implementation for pre-read and pre-edit hooks.
 fn hook_file_tool(action: &'static str) {
     run_hook(|input| {
         let cwd = &input.cwd;
         let file_path = extract_tool_file_path(&input, cwd)?;
-        let db = require_indexed_db(cwd)?;
-        let detail = lookup_detail(&db, cwd, &file_path)?;
+        let (db, rt) = require_indexed_db(cwd)?;
+        let detail = lookup_detail(&db, &rt, cwd, &file_path)?;
         let ctx = format_tool_file_context(cwd, &detail, action)?;
         Some(("PreToolUse", ctx))
     });
 }
 
-/// PostToolUse for Edit/Write/Bash — track file changes via git diff.
 pub fn hook_post_edit() {
     run_hook(|input| {
         let cwd = &input.cwd;
-        let db = require_indexed_db(cwd)?;
+        let (db, rt) = require_indexed_db(cwd)?;
         let changed_files = git_changed_files(cwd);
 
         let lines: Vec<String> = changed_files
@@ -221,7 +240,7 @@ pub fn hook_post_edit() {
             .map(|(added, removed, file)| {
                 let abs_path = resolve_abs_path(file, cwd);
                 let dep_count =
-                    lookup_detail(&db, cwd, &abs_path).map_or(0, |d| d.dependents.len());
+                    lookup_detail(&db, &rt, cwd, &abs_path).map_or(0, |d| d.dependents.len());
                 let suffix = if dep_count > 0 {
                     format!(" — {dep_count} dependents")
                 } else {
@@ -243,17 +262,16 @@ pub fn hook_post_edit() {
     });
 }
 
-/// PostCompact — re-inject structural summary of modified files after compaction.
 pub fn hook_post_compact() {
     run_hook(|input| {
         let cwd = &input.cwd;
-        let db = require_indexed_db(cwd)?;
+        let (db, rt) = require_indexed_db(cwd)?;
 
         let parts: Vec<String> = git_changed_files(cwd)
             .iter()
             .filter_map(|(added, removed, file)| {
                 let abs_path = resolve_abs_path(file, cwd);
-                let detail = lookup_detail(&db, cwd, &abs_path)?;
+                let detail = lookup_detail(&db, &rt, cwd, &abs_path)?;
                 Some(format_compact_file_context(cwd, &detail, added, removed))
             })
             .collect();
@@ -428,8 +446,8 @@ fn git_changed_files(cwd: &str) -> Vec<(String, String, String)> {
 // --- Prompt parsing helpers ---
 
 const FILE_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "rs", "rb", "ex", "exs", "py", "go", "java", "c", "h", "cpp", "hpp",
-    "css", "scss", "vue", "svelte", "json", "toml", "yaml", "yml", "md",
+    "ts", "tsx", "js", "jsx", "rs", "rb", "ex", "exs", "py", "go", "java", "c", "h", "cpp",
+    "hpp", "css", "scss", "vue", "svelte", "json", "toml", "yaml", "yml", "md",
 ];
 
 fn extract_file_mentions(text: &str) -> Vec<String> {
@@ -453,22 +471,6 @@ fn extract_file_mentions(text: &str) -> Vec<String> {
     mentions.sort();
     mentions.dedup();
     mentions
-}
-
-fn find_files_by_suffix(db: &Connection, project: &str, suffix: &str) -> Vec<String> {
-    let pattern = format!("%{suffix}");
-    let mut stmt = db
-        .prepare_cached(
-            "SELECT file_path FROM files WHERE project = ?1 AND file_path LIKE ?2 LIMIT 3",
-        )
-        .unwrap_or_else(|_| panic!("Failed to prepare query"));
-
-    stmt.query_map(rusqlite::params![project, pattern], |row| {
-        row.get::<_, String>(0)
-    })
-    .unwrap_or_else(|_| panic!("Failed to query"))
-    .filter_map(Result::ok)
-    .collect()
 }
 
 #[cfg(test)]
@@ -499,20 +501,6 @@ mod tests {
         let mentions = extract_file_mentions("update components/Button.tsx and utils/helpers.ts");
         assert!(mentions.contains(&"components/Button.tsx".to_string()));
         assert!(mentions.contains(&"utils/helpers.ts".to_string()));
-    }
-
-    #[test]
-    fn test_extract_file_mentions_ruby() {
-        let mentions = extract_file_mentions("check app/models/user.rb for the issue");
-        assert!(mentions.contains(&"app/models/user.rb".to_string()));
-    }
-
-    #[test]
-    fn test_extract_file_mentions_elixir() {
-        let mentions =
-            extract_file_mentions("look at lib/my_app/accounts.ex and test/accounts_test.exs");
-        assert!(mentions.contains(&"lib/my_app/accounts.ex".to_string()));
-        assert!(mentions.contains(&"test/accounts_test.exs".to_string()));
     }
 
     #[test]

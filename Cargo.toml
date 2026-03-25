@@ -1,6 +1,6 @@
 [package]
 name = "cartographer"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 
 [[bin]]
@@ -16,7 +16,7 @@ tree-sitter-javascript = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-ruby = "0.23"
 tree-sitter-elixir = "0.3"
-rusqlite = { version = "0.38", features = ["bundled"] }
+surrealdb = { version = "2", features = ["protocol-ws"] }
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
 schemars = "1.2"

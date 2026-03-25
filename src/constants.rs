@@ -1,18 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::LazyLock;
 
 pub const DEFAULT_MAX_DEPTH: i64 = 2;
 pub const DEFAULT_MAX_RESULTS: i64 = 20;
-
-pub fn data_dir() -> Result<PathBuf, std::env::VarError> {
-    let home = std::env::var("HOME")?;
-    Ok(PathBuf::from(home).join(".cartographer"))
-}
-
-pub fn default_db_path() -> Result<PathBuf, std::env::VarError> {
-    Ok(data_dir()?.join("map.db"))
-}
 
 #[derive(Debug, Clone)]
 pub struct LanguageConfig {

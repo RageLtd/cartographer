@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use rusqlite::{Connection, OptionalExtension};
+use serde::Deserialize;
 
+use super::client::Db;
 use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
 use crate::types::{RelevantFile, Symbol};
 
@@ -9,200 +10,241 @@ use crate::types::{RelevantFile, Symbol};
 // Graph queries
 // ============================================================================
 
-pub fn walk_import_graph(
-    db: &Connection,
+pub async fn walk_import_graph(
+    db: &Db,
     project: &str,
     entry_points: &[String],
     max_depth: Option<i64>,
     max_results: Option<i64>,
-) -> rusqlite::Result<Vec<RelevantFile>> {
+) -> Result<Vec<RelevantFile>, String> {
     if entry_points.is_empty() {
         return Ok(vec![]);
     }
 
-    let max_depth = max_depth.unwrap_or(DEFAULT_MAX_DEPTH);
-    let max_results = max_results.unwrap_or(DEFAULT_MAX_RESULTS);
+    let max_depth = max_depth.unwrap_or(DEFAULT_MAX_DEPTH) as usize;
+    let max_results = max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
 
-    let placeholders: Vec<String> = entry_points
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!("?{}", i + 2))
-        .collect();
-    let placeholders_str = placeholders.join(", ");
+    let mut visited: HashMap<String, (usize, String)> = HashMap::new();
+    let mut queue: VecDeque<(String, usize, String)> = VecDeque::new();
 
-    let sql = format!(
-        "WITH RECURSIVE
-        reachable(file_path, depth, reason) AS (
-            SELECT file_path, 0, 'entry'
-            FROM files
-            WHERE project = ?1 AND file_path IN ({placeholders})
+    for ep in entry_points {
+        if !visited.contains_key(ep) {
+            visited.insert(ep.clone(), (0, "entry".to_string()));
+            queue.push_back((ep.clone(), 0, "entry".to_string()));
+        }
+    }
 
-            UNION
+    while let Some((file_path, depth, _reason)) = queue.pop_front() {
+        if depth >= max_depth || visited.len() >= max_results {
+            break;
+        }
 
-            SELECT i.target_path, r.depth + 1, 'dependency'
-            FROM reachable r
-            JOIN imports i ON i.source_path = r.file_path AND i.project = ?1
-            WHERE r.depth < ?{depth_param}
+        let deps = get_imports_from(db, project, &file_path).await?;
+        for dep in &deps {
+            if !visited.contains_key(dep) {
+                visited.insert(dep.clone(), (depth + 1, "dependency".to_string()));
+                queue.push_back((dep.clone(), depth + 1, "dependency".to_string()));
+            }
+        }
 
-            UNION
-
-            SELECT i.source_path, r.depth + 1, 'dependent'
-            FROM reachable r
-            JOIN imports i ON i.target_path = r.file_path AND i.project = ?1
-            WHERE r.depth < ?{depth_param}
-        )
-        SELECT DISTINCT
-            r.file_path,
-            MIN(r.depth) as depth,
-            CASE MIN(CASE r.reason WHEN 'entry' THEN 0 WHEN 'dependency' THEN 1 WHEN 'dependent' THEN 2 END)
-                WHEN 0 THEN 'entry'
-                WHEN 1 THEN 'dependency'
-                WHEN 2 THEN 'dependent'
-            END as reason,
-            COALESCE(f.symbols, '[]') as symbols
-        FROM reachable r
-        LEFT JOIN files f ON f.file_path = r.file_path AND f.project = ?1
-        GROUP BY r.file_path
-        ORDER BY depth ASC
-        LIMIT ?{limit_param}",
-        placeholders = placeholders_str,
-        depth_param = entry_points.len() + 2,
-        limit_param = entry_points.len() + 3,
-    );
-
-    let mut stmt = db.prepare(&sql)?;
-
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-        Vec::with_capacity(entry_points.len() + 3);
-    params.push(Box::new(project.to_string()));
-    params.extend(
-        entry_points
-            .iter()
-            .map(|ep| Box::new(ep.clone()) as Box<dyn rusqlite::types::ToSql>),
-    );
-    params.push(Box::new(max_depth));
-    params.push(Box::new(max_results));
-
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-    let rows = stmt.query_map(param_refs.as_slice(), |row| {
-        let file_path: String = row.get(0)?;
-        let depth: i64 = row.get(1)?;
-        let reason: String = row.get(2)?;
-        let symbols_str: String = row.get(3)?;
-        Ok((file_path, depth, reason, symbols_str))
-    })?;
-
-    rows.map(|row| {
-        let (file_path, depth, reason, symbols_str) = row?;
-        let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols_str).unwrap_or_default();
-        let relative_path = file_path
-            .strip_prefix(project)
-            .map(|s| s.trim_start_matches('/').to_string())
-            .unwrap_or_else(|| file_path.clone());
-        Ok(RelevantFile {
-            file_path,
-            relative_path,
-            reason,
-            depth,
-            symbols,
-        })
-    })
-    .collect()
-}
-
-pub fn search_files(
-    db: &Connection,
-    project: &str,
-    query: &str,
-    limit: i64,
-) -> rusqlite::Result<Vec<(String, Vec<Symbol>)>> {
-    let mut stmt = db.prepare_cached(
-        "SELECT f.file_path, f.symbols
-         FROM files_fts fts
-         JOIN files f ON f.id = fts.rowid
-         WHERE files_fts MATCH ?1 AND f.project = ?2
-         ORDER BY rank
-         LIMIT ?3",
-    )?;
-
-    // Wrap query in double quotes to treat as phrase literal, preventing FTS5 operator injection
-    let safe_query = format!("\"{}\"", query.replace('"', "\"\""));
-
-    let rows = stmt.query_map(rusqlite::params![safe_query, project, limit], |row| {
-        let file_path: String = row.get(0)?;
-        let symbols_str: String = row.get(1)?;
-        Ok((file_path, symbols_str))
-    })?;
-
-    rows.map(|row| {
-        let (file_path, symbols_str) = row?;
-        let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols_str).unwrap_or_default();
-        Ok((file_path, symbols))
-    })
-    .collect()
-}
-
-// ============================================================================
-// Cycle detection
-// ============================================================================
-
-pub fn find_cycles(db: &Connection, project: &str) -> rusqlite::Result<Vec<Vec<String>>> {
-    let mut stmt = db.prepare(
-        "WITH RECURSIVE
-        chain(file_path, origin, path, depth) AS (
-            SELECT DISTINCT source_path, source_path, source_path, 0
-            FROM imports WHERE project = ?1
-
-            UNION ALL
-
-            SELECT i.target_path, chain.origin,
-                   chain.path || '|' || i.target_path,
-                   chain.depth + 1
-            FROM chain
-            JOIN imports i ON i.source_path = chain.file_path AND i.project = ?1
-            WHERE chain.depth < 20
-              AND chain.path NOT LIKE '%|' || i.target_path || '|%'
-              AND i.target_path != chain.origin
-        )
-        SELECT chain.path || '|' || i.target_path
-        FROM chain
-        JOIN imports i ON i.source_path = chain.file_path AND i.project = ?1
-        WHERE i.target_path = chain.origin",
-    )?;
-
-    let rows = stmt.query_map([project], |row| row.get::<_, String>(0))?;
-
-    let mut seen = HashSet::new();
-    let mut cycles = Vec::new();
-
-    for row in rows {
-        let path_str = row?;
-        let parts: Vec<String> = path_str.split('|').map(|s| s.to_string()).collect();
-
-        // Normalize: rotate so the lexicographically smallest element is first
-        if let Some(min_pos) = parts
-            .iter()
-            .enumerate()
-            .take(parts.len() - 1)
-            .min_by_key(|(_, v)| v.as_str())
-            .map(|(i, _)| i)
-        {
-            let normalized: Vec<String> = parts[min_pos..parts.len() - 1]
-                .iter()
-                .chain(parts[..min_pos].iter())
-                .cloned()
-                .collect();
-            let key = normalized.join("|");
-            if seen.insert(key) {
-                let mut cycle = normalized;
-                cycle.push(cycle[0].clone());
-                cycles.push(cycle);
+        let dependents = get_importers_of(db, project, &file_path).await?;
+        for dep in &dependents {
+            if !visited.contains_key(dep) {
+                visited.insert(dep.clone(), (depth + 1, "dependent".to_string()));
+                queue.push_back((dep.clone(), depth + 1, "dependent".to_string()));
             }
         }
     }
 
-    Ok(cycles)
+    let mut results: Vec<RelevantFile> = Vec::new();
+    for (file_path, (depth, reason)) in &visited {
+        let symbols = get_file_symbols(db, project, file_path).await?;
+        let relative_path = file_path
+            .strip_prefix(project)
+            .unwrap_or(file_path)
+            .trim_start_matches('/')
+            .to_string();
+
+        results.push(RelevantFile {
+            file_path: file_path.clone(),
+            relative_path,
+            reason: reason.clone(),
+            depth: *depth as i64,
+            symbols,
+        });
+    }
+
+    results.sort_by_key(|f| f.depth);
+    results.truncate(max_results);
+    Ok(results)
+}
+
+async fn get_imports_from(db: &Db, project: &str, source_path: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        target_path: String,
+    }
+
+    let mut result = db
+        .query("SELECT target_path FROM cart_import WHERE project = $project AND source_path = $source")
+        .bind(("project", project.to_string()))
+        .bind(("source", source_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|r| r.target_path).collect())
+}
+
+async fn get_importers_of(db: &Db, project: &str, target_path: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        source_path: String,
+    }
+
+    let mut result = db
+        .query("SELECT source_path FROM cart_import WHERE project = $project AND target_path = $target")
+        .bind(("project", project.to_string()))
+        .bind(("target", target_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|r| r.source_path).collect())
+}
+
+async fn get_file_symbols(db: &Db, project: &str, file_path: &str) -> Result<Vec<Symbol>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        symbols: String,
+    }
+
+    let mut result = db
+        .query("SELECT symbols FROM cart_file WHERE project = $project AND file_path = $file_path LIMIT 1")
+        .bind(("project", project.to_string()))
+        .bind(("file_path", file_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(row
+        .and_then(|r| sonic_rs::from_str(&r.symbols).ok())
+        .unwrap_or_default())
+}
+
+// ============================================================================
+// Full-text search
+// ============================================================================
+
+pub async fn search_files(
+    db: &Db,
+    project: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<(String, Vec<Symbol>)>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        file_path: String,
+        symbols: String,
+    }
+
+    let mut result = db
+        .query(
+            "SELECT file_path, symbols, search::score(1) AS score
+             FROM cart_file
+             WHERE project = $project AND searchable @1@ $query
+             ORDER BY score DESC
+             LIMIT $limit",
+        )
+        .bind(("project", project.to_string()))
+        .bind(("query", query.to_string()))
+        .bind(("limit", limit))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let symbols: Vec<Symbol> = sonic_rs::from_str(&r.symbols).unwrap_or_default();
+            (r.file_path, symbols)
+        })
+        .collect())
+}
+
+// ============================================================================
+// Cycle detection — DFS-based
+// ============================================================================
+
+pub async fn find_cycles(db: &Db, project: &str) -> Result<Vec<Vec<String>>, String> {
+    #[derive(Deserialize)]
+    struct Edge {
+        source_path: String,
+        target_path: String,
+    }
+
+    let mut result = db
+        .query("SELECT source_path, target_path FROM cart_import WHERE project = $project")
+        .bind(("project", project.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let edges: Vec<Edge> = result.take(0).map_err(|e| e.to_string())?;
+
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &edges {
+        graph
+            .entry(edge.source_path.clone())
+            .or_default()
+            .push(edge.target_path.clone());
+    }
+
+    let mut all_cycles: Vec<Vec<String>> = Vec::new();
+    let mut seen_cycles: HashSet<String> = HashSet::new();
+
+    for start in graph.keys() {
+        let mut stack: Vec<(String, Vec<String>)> = vec![(start.clone(), vec![start.clone()])];
+        let mut visited_in_path: HashSet<String> = HashSet::new();
+        visited_in_path.insert(start.clone());
+
+        while let Some((current, path)) = stack.pop() {
+            if let Some(neighbors) = graph.get(&current) {
+                for next in neighbors {
+                    if next == start && path.len() > 1 {
+                        let mut cycle = path.clone();
+                        cycle.push(start.clone());
+
+                        if let Some(min_pos) = cycle
+                            .iter()
+                            .take(cycle.len() - 1)
+                            .enumerate()
+                            .min_by_key(|(_, v)| v.as_str())
+                            .map(|(i, _)| i)
+                        {
+                            let normalized: Vec<String> = cycle[min_pos..cycle.len() - 1]
+                                .iter()
+                                .chain(cycle[..min_pos].iter())
+                                .cloned()
+                                .collect();
+                            let key = normalized.join("|");
+                            if seen_cycles.insert(key) {
+                                let mut final_cycle = normalized;
+                                final_cycle.push(final_cycle[0].clone());
+                                all_cycles.push(final_cycle);
+                            }
+                        }
+                    } else if !visited_in_path.contains(next) && path.len() < 20 {
+                        let mut new_path = path.clone();
+                        new_path.push(next.clone());
+                        visited_in_path.insert(next.clone());
+                        stack.push((next.clone(), new_path));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(all_cycles)
 }
 
 // ============================================================================
@@ -217,68 +259,81 @@ pub struct FileDetail {
     pub dependents: Vec<(String, Vec<String>)>,
 }
 
-pub fn get_file_detail(
-    db: &Connection,
+pub async fn get_file_detail(
+    db: &Db,
     project: &str,
     file_path: &str,
-) -> rusqlite::Result<Option<FileDetail>> {
-    let mut stmt = db.prepare_cached(
-        "SELECT language, symbols FROM files WHERE project = ?1 AND file_path = ?2",
-    )?;
-    let file_row = stmt
-        .query_row(rusqlite::params![project, file_path], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .optional()?;
+) -> Result<Option<FileDetail>, String> {
+    #[derive(Deserialize)]
+    struct FileRow {
+        language: String,
+        symbols: String,
+    }
 
-    let (language, symbols_str) = match file_row {
+    let mut result = db
+        .query("SELECT language, symbols FROM cart_file WHERE project = $project AND file_path = $file_path LIMIT 1")
+        .bind(("project", project.to_string()))
+        .bind(("file_path", file_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let file_row: Option<FileRow> = result.take(0).map_err(|e| e.to_string())?;
+    let file_row = match file_row {
         Some(r) => r,
         None => return Ok(None),
     };
 
-    let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols_str).unwrap_or_default();
+    let symbols: Vec<Symbol> = sonic_rs::from_str(&file_row.symbols).unwrap_or_default();
 
-    let mut imp_stmt = db.prepare_cached(
-        "SELECT target_path, symbols FROM imports WHERE project = ?1 AND source_path = ?2",
-    )?;
-    let imports: Vec<(String, Vec<String>)> = imp_stmt
-        .query_map(rusqlite::params![project, file_path], |row| {
-            let target: String = row.get(0)?;
-            let syms_str: String = row.get(1)?;
-            Ok((target, syms_str))
-        })?
-        .filter_map(Result::ok)
-        .map(|(target, syms_str)| {
-            let syms: Vec<String> = sonic_rs::from_str(&syms_str).unwrap_or_default();
-            (target, syms)
+    #[derive(Deserialize)]
+    struct ImportRow {
+        target_path: String,
+        symbols: String,
+    }
+
+    let mut imp_result = db
+        .query("SELECT target_path, symbols FROM cart_import WHERE project = $project AND source_path = $file_path")
+        .bind(("project", project.to_string()))
+        .bind(("file_path", file_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let imp_rows: Vec<ImportRow> = imp_result.take(0).map_err(|e| e.to_string())?;
+    let imports: Vec<(String, Vec<String>)> = imp_rows
+        .into_iter()
+        .map(|r| {
+            let syms: Vec<String> = sonic_rs::from_str(&r.symbols).unwrap_or_default();
+            (r.target_path, syms)
         })
         .collect();
 
-    let mut dep_stmt = db.prepare_cached(
-        "SELECT source_path, symbols FROM imports WHERE project = ?1 AND target_path = ?2",
-    )?;
-    let dependents: Vec<(String, Vec<String>)> = dep_stmt
-        .query_map(rusqlite::params![project, file_path], |row| {
-            let source: String = row.get(0)?;
-            let syms_str: String = row.get(1)?;
-            Ok((source, syms_str))
-        })?
-        .filter_map(Result::ok)
-        .map(|(source, syms_str)| {
-            let syms: Vec<String> = sonic_rs::from_str(&syms_str).unwrap_or_default();
-            (source, syms)
+    #[derive(Deserialize)]
+    struct DepRow {
+        source_path: String,
+        symbols: String,
+    }
+
+    let mut dep_result = db
+        .query("SELECT source_path, symbols FROM cart_import WHERE project = $project AND target_path = $file_path")
+        .bind(("project", project.to_string()))
+        .bind(("file_path", file_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let dep_rows: Vec<DepRow> = dep_result.take(0).map_err(|e| e.to_string())?;
+    let dependents: Vec<(String, Vec<String>)> = dep_rows
+        .into_iter()
+        .map(|r| {
+            let syms: Vec<String> = sonic_rs::from_str(&r.symbols).unwrap_or_default();
+            (r.source_path, syms)
         })
         .collect();
 
     Ok(Some(FileDetail {
         file_path: file_path.to_string(),
-        language,
+        language: file_row.language,
         symbols,
         imports,
         dependents,
     }))
 }
-
-#[cfg(test)]
-#[path = "graph_tests.rs"]
-mod tests;

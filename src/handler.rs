@@ -39,12 +39,9 @@ impl ServerHandler for CartographerServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         if request.uri == "cartographer://project" {
-            let db = self
-                .db()
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-            let stats = get_project_stats(&db)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            let stats = get_project_stats(&self.db)
+                .await
+                .map_err(|e| McpError::internal_error(e, None))?;
 
             #[derive(serde::Serialize)]
             struct ProjectRow {

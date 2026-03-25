@@ -9,13 +9,10 @@ mod server;
 mod server_types;
 mod types;
 
-use std::fs;
-
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
-use crate::constants::{data_dir, default_db_path};
-use crate::db::setup::create_database;
+use crate::db::client::connect;
 use crate::server::CartographerServer;
 
 #[tokio::main]
@@ -33,13 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
-    fs::create_dir_all(data_dir()?)?;
-
-    let db_path = default_db_path()?;
-    let db_path_str = db_path
-        .to_str()
-        .ok_or("Database path contains non-UTF-8 characters")?;
-    let db = create_database(db_path_str)?;
+    let db = connect().await.map_err(|e| {
+        eprintln!("Failed to connect to SurrealDB: {e}");
+        e
+    })?;
 
     tracing::info!("Cartographer MCP server starting on stdio");
 

@@ -3,12 +3,9 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use rusqlite::Connection;
-
 use crate::constants::{SKIP_DIRS, SUPPORTED_EXTENSIONS};
-use crate::db::queries::{
-    get_file_hash, remove_file, replace_imports, save_git_status, upsert_file,
-};
+use crate::db::client::Db;
+use crate::db::queries::{get_file_hash, remove_file, replace_imports, save_git_status, upsert_file};
 use crate::parser::{hash_file, parse_file};
 
 // ============================================================================
@@ -69,7 +66,6 @@ pub fn diff_git_status(
         }
     }
 
-    // Files in last but not in current — check if they still exist
     for file_path in last_status.keys() {
         if !current_status.contains_key(file_path) && !Path::new(file_path).exists() {
             deleted.push(file_path.clone());
@@ -83,21 +79,24 @@ pub fn diff_git_status(
 // Full index
 // ============================================================================
 
-pub fn full_index(
-    db: &Connection,
+pub async fn full_index(
+    db: &Db,
     project: &str,
     project_root: &str,
 ) -> Result<(usize, usize), String> {
     let files = walk_project_files(project_root);
-    let (indexed, skipped) = files.iter().fold((0, 0), |(ok, err), file_path| {
-        match index_single_file(db, project, file_path) {
-            Ok(()) => (ok + 1, err),
-            Err(_) => (ok, err + 1),
+    let mut indexed = 0;
+    let mut skipped = 0;
+
+    for file_path in &files {
+        match index_single_file(db, project, file_path).await {
+            Ok(()) => indexed += 1,
+            Err(_) => skipped += 1,
         }
-    });
+    }
 
     let status = get_current_git_status(project_root);
-    save_git_status(db, project, &status).map_err(|e| format!("Failed to save git status: {e}"))?;
+    save_git_status(db, project, &status).await?;
 
     Ok((indexed, skipped))
 }
@@ -106,8 +105,8 @@ pub fn full_index(
 // Incremental index
 // ============================================================================
 
-pub fn incremental_index(
-    db: &Connection,
+pub async fn incremental_index(
+    db: &Db,
     project: &str,
     modified: &[String],
     deleted: &[String],
@@ -116,20 +115,18 @@ pub fn incremental_index(
     let mut removed = 0;
 
     for file_path in deleted {
-        remove_file(db, project, file_path)
-            .map_err(|e| format!("Failed to remove {file_path}: {e}"))?;
+        remove_file(db, project, file_path).await?;
         removed += 1;
     }
 
     for file_path in modified {
         if !Path::new(file_path).exists() {
-            remove_file(db, project, file_path)
-                .map_err(|e| format!("Failed to remove {file_path}: {e}"))?;
+            remove_file(db, project, file_path).await?;
             removed += 1;
             continue;
         }
 
-        match index_single_file(db, project, file_path) {
+        match index_single_file(db, project, file_path).await {
             Ok(()) => indexed += 1,
             Err(e) => {
                 tracing::warn!("Failed to index {file_path}: {e}");
@@ -144,28 +141,18 @@ pub fn incremental_index(
 // Single file index
 // ============================================================================
 
-pub fn index_single_file(db: &Connection, project: &str, file_path: &str) -> Result<(), String> {
+pub async fn index_single_file(db: &Db, project: &str, file_path: &str) -> Result<(), String> {
     let hash = hash_file(file_path)?;
 
-    // Skip re-parsing if the file content hasn't changed
-    if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path) {
+    if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path).await {
         if existing_hash == hash {
             return Ok(());
         }
     }
 
     let result = parse_file(file_path, None)?;
-    upsert_file(
-        db,
-        project,
-        file_path,
-        &result.language,
-        &result.symbols,
-        &hash,
-    )
-    .map_err(|e| format!("Failed to upsert {file_path}: {e}"))?;
-    replace_imports(db, project, file_path, &result.imports)
-        .map_err(|e| format!("Failed to replace imports for {file_path}: {e}"))?;
+    upsert_file(db, project, file_path, &result.language, &result.symbols, &hash).await?;
+    replace_imports(db, project, file_path, &result.imports).await?;
     Ok(())
 }
 

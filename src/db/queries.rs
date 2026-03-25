@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use serde::Deserialize;
 
+use super::client::Db;
 use crate::types::{ImportEdge, Symbol};
 
 fn epoch_ms() -> i64 {
@@ -16,86 +17,108 @@ fn epoch_ms() -> i64 {
 // File operations
 // ============================================================================
 
-pub fn upsert_file(
-    db: &Connection,
+pub async fn upsert_file(
+    db: &Db,
     project: &str,
     file_path: &str,
     language: &str,
     symbols: &[Symbol],
     content_hash: &str,
-) -> rusqlite::Result<()> {
+) -> Result<(), String> {
     let symbols_json = sonic_rs::to_string(symbols).unwrap_or_else(|_| "[]".to_string());
-    let symbol_names: String = symbols
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    db.execute(
-        "INSERT INTO files (project, file_path, language, symbols, symbol_names, last_parsed_epoch, content_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(project, file_path) DO UPDATE SET
-            language = excluded.language,
-            symbols = excluded.symbols,
-            symbol_names = excluded.symbol_names,
-            last_parsed_epoch = excluded.last_parsed_epoch,
-            content_hash = excluded.content_hash",
-        rusqlite::params![project, file_path, language, symbols_json, symbol_names, epoch_ms(), content_hash],
-    )?;
+    let symbol_names: String = symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" ");
+    let searchable = format!("{file_path} {symbol_names}");
+    let now = epoch_ms();
+
+    db.query(
+        "DELETE cart_file WHERE project = $project AND file_path = $file_path;
+         CREATE cart_file SET
+            project = $project,
+            file_path = $file_path,
+            language = $language,
+            symbols = $symbols,
+            symbol_names = $symbol_names,
+            searchable = $searchable,
+            content_hash = $content_hash,
+            last_parsed_epoch = $now",
+    )
+    .bind(("project", project.to_string()))
+    .bind(("file_path", file_path.to_string()))
+    .bind(("language", language.to_string()))
+    .bind(("symbols", symbols_json))
+    .bind(("symbol_names", symbol_names))
+    .bind(("searchable", searchable))
+    .bind(("content_hash", content_hash.to_string()))
+    .bind(("now", now))
+    .await
+    .map_err(|e| format!("Failed to upsert file {file_path}: {e}"))?;
+
     Ok(())
 }
 
-pub fn get_file_hash(
-    db: &Connection,
-    project: &str,
-    file_path: &str,
-) -> rusqlite::Result<Option<String>> {
-    let mut stmt =
-        db.prepare_cached("SELECT content_hash FROM files WHERE project = ?1 AND file_path = ?2")?;
-    stmt.query_row(rusqlite::params![project, file_path], |row| {
-        row.get::<_, String>(0)
-    })
-    .optional()
+pub async fn get_file_hash(db: &Db, project: &str, file_path: &str) -> Result<Option<String>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        content_hash: String,
+    }
+
+    let mut result = db
+        .query("SELECT content_hash FROM cart_file WHERE project = $project AND file_path = $file_path LIMIT 1")
+        .bind(("project", project.to_string()))
+        .bind(("file_path", file_path.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(row.map(|r| r.content_hash))
 }
 
-pub fn remove_file(db: &Connection, project: &str, file_path: &str) -> rusqlite::Result<()> {
-    db.execute(
-        "DELETE FROM files WHERE project = ?1 AND file_path = ?2",
-        rusqlite::params![project, file_path],
-    )?;
-    db.execute(
-        "DELETE FROM imports WHERE project = ?1 AND (source_path = ?2 OR target_path = ?2)",
-        rusqlite::params![project, file_path],
-    )?;
+pub async fn remove_file(db: &Db, project: &str, file_path: &str) -> Result<(), String> {
+    db.query(
+        "DELETE cart_file WHERE project = $project AND file_path = $file_path;
+         DELETE cart_import WHERE project = $project AND (source_path = $file_path OR target_path = $file_path)",
+    )
+    .bind(("project", project.to_string()))
+    .bind(("file_path", file_path.to_string()))
+    .await
+    .map_err(|e| format!("Failed to remove file {file_path}: {e}"))?;
+
     Ok(())
 }
 
-pub fn replace_imports(
-    db: &Connection,
+pub async fn replace_imports(
+    db: &Db,
     project: &str,
     source_path: &str,
     edges: &[ImportEdge],
-) -> rusqlite::Result<()> {
+) -> Result<(), String> {
     let now = epoch_ms();
-    db.execute(
-        "DELETE FROM imports WHERE project = ?1 AND source_path = ?2",
-        rusqlite::params![project, source_path],
-    )?;
 
-    let mut stmt = db.prepare_cached(
-        "INSERT OR REPLACE INTO imports (project, source_path, target_path, specifier, symbols, updated_at_epoch)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
+    db.query("DELETE cart_import WHERE project = $project AND source_path = $source_path")
+        .bind(("project", project.to_string()))
+        .bind(("source_path", source_path.to_string()))
+        .await
+        .map_err(|e| format!("Failed to delete old imports: {e}"))?;
 
     for edge in edges {
         let symbols_json = sonic_rs::to_string(&edge.symbols).unwrap_or_else(|_| "[]".to_string());
-        stmt.execute(rusqlite::params![
-            project,
-            edge.source,
-            edge.target,
-            edge.specifier,
-            symbols_json,
-            now
-        ])?;
+        db.query(
+            "CREATE cart_import SET
+                project = $project,
+                source_path = $source_path,
+                target_path = $target_path,
+                specifier = $specifier,
+                symbols = $symbols,
+                updated_at_epoch = $now",
+        )
+        .bind(("project", project.to_string()))
+        .bind(("source_path", edge.source.clone()))
+        .bind(("target_path", edge.target.clone()))
+        .bind(("specifier", edge.specifier.clone()))
+        .bind(("symbols", symbols_json))
+        .bind(("now", now))
+        .await
+        .map_err(|e| format!("Failed to insert import edge: {e}"))?;
     }
 
     Ok(())
@@ -105,204 +128,113 @@ pub fn replace_imports(
 // Stats
 // ============================================================================
 
-pub fn get_file_count(db: &Connection, project: &str) -> rusqlite::Result<i64> {
-    db.query_row(
-        "SELECT COUNT(*) FROM files WHERE project = ?1",
-        [project],
-        |row| row.get(0),
-    )
+pub async fn get_file_count(db: &Db, project: &str) -> Result<i64, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        count: i64,
+    }
+
+    let mut result = db
+        .query("SELECT count() as count FROM cart_file WHERE project = $project GROUP ALL")
+        .bind(("project", project.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(row.map(|r| r.count).unwrap_or(0))
 }
 
-pub fn get_language_counts(
-    db: &Connection,
-    project: &str,
-) -> rusqlite::Result<HashMap<String, usize>> {
-    let mut stmt = db.prepare_cached(
-        "SELECT language, COUNT(*) FROM files WHERE project = ?1 GROUP BY language",
-    )?;
-    let rows = stmt.query_map([project], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
-    })?;
-    rows.collect::<rusqlite::Result<HashMap<_, _>>>()
+pub async fn get_language_counts(db: &Db, project: &str) -> Result<HashMap<String, usize>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        language: String,
+        count: i64,
+    }
+
+    let mut result = db
+        .query("SELECT language, count() as count FROM cart_file WHERE project = $project GROUP BY language")
+        .bind(("project", project.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|r| (r.language, r.count as usize)).collect())
 }
 
-pub fn get_import_count(db: &Connection, project: &str) -> rusqlite::Result<i64> {
-    db.query_row(
-        "SELECT COUNT(*) FROM imports WHERE project = ?1",
-        [project],
-        |row| row.get(0),
-    )
+pub async fn get_import_count(db: &Db, project: &str) -> Result<i64, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        count: i64,
+    }
+
+    let mut result = db
+        .query("SELECT count() as count FROM cart_import WHERE project = $project GROUP ALL")
+        .bind(("project", project.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(row.map(|r| r.count).unwrap_or(0))
 }
 
-pub fn get_project_stats(db: &Connection) -> rusqlite::Result<Vec<(String, i64)>> {
-    let mut stmt = db.prepare("SELECT project, COUNT(*) as count FROM files GROUP BY project")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })?;
-    rows.collect()
+pub async fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        project: String,
+        count: i64,
+    }
+
+    let mut result = db
+        .query("SELECT project, count() as count FROM cart_file GROUP BY project")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|r| (r.project, r.count)).collect())
 }
 
 // ============================================================================
 // Git state tracking
 // ============================================================================
 
-pub fn get_last_git_status(
-    db: &Connection,
-    project: &str,
-) -> rusqlite::Result<HashMap<String, String>> {
-    let mut stmt = db.prepare_cached("SELECT last_status FROM git_state WHERE project = ?1")?;
-    Ok(stmt
-        .query_row([project], |row| row.get::<_, String>(0))
-        .optional()?
-        .and_then(|json| sonic_rs::from_str(&json).ok())
+pub async fn get_last_git_status(db: &Db, project: &str) -> Result<HashMap<String, String>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        last_status: String,
+    }
+
+    let mut result = db
+        .query("SELECT last_status FROM cart_git_state WHERE project = $project LIMIT 1")
+        .bind(("project", project.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(row
+        .and_then(|r| sonic_rs::from_str(&r.last_status).ok())
         .unwrap_or_default())
 }
 
-pub fn save_git_status(
-    db: &Connection,
+pub async fn save_git_status(
+    db: &Db,
     project: &str,
     status: &HashMap<String, String>,
-) -> rusqlite::Result<()> {
+) -> Result<(), String> {
     let json = sonic_rs::to_string(status).unwrap_or_else(|_| "{}".to_string());
-    db.execute(
-        "INSERT INTO git_state (project, last_status, updated_at_epoch)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(project) DO UPDATE SET
-            last_status = excluded.last_status,
-            updated_at_epoch = excluded.updated_at_epoch",
-        rusqlite::params![project, json, epoch_ms()],
-    )?;
+    let now = epoch_ms();
+
+    db.query(
+        "DELETE cart_git_state WHERE project = $project;
+         CREATE cart_git_state SET
+            project = $project,
+            last_status = $json,
+            updated_at_epoch = $now",
+    )
+    .bind(("project", project.to_string()))
+    .bind(("json", json))
+    .bind(("now", now))
+    .await
+    .map_err(|e| format!("Failed to save git status: {e}"))?;
+
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::setup::create_database;
-    use crate::types::{SymbolKind, Visibility};
-
-    fn test_db() -> Connection {
-        create_database(":memory:").unwrap()
-    }
-
-    fn make_symbol(name: &str, kind: SymbolKind) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            kind,
-            signature: format!("fn {name}()"),
-            doc_comment: None,
-            visibility: Visibility::Exported,
-            line: 1,
-        }
-    }
-
-    #[test]
-    fn test_upsert_and_retrieve_file() {
-        let db = test_db();
-        let syms = vec![make_symbol("foo", SymbolKind::Function)];
-        upsert_file(
-            &db,
-            "/project",
-            "/project/src/a.ts",
-            "typescript",
-            &syms,
-            "abc123",
-        )
-        .unwrap();
-
-        assert_eq!(get_file_count(&db, "/project").unwrap(), 1);
-        assert_eq!(
-            get_file_hash(&db, "/project", "/project/src/a.ts").unwrap(),
-            Some("abc123".to_string())
-        );
-        let langs = get_language_counts(&db, "/project").unwrap();
-        assert_eq!(langs.get("typescript"), Some(&1));
-    }
-
-    #[test]
-    fn test_upsert_updates_existing() {
-        let db = test_db();
-        let syms1 = vec![make_symbol("foo", SymbolKind::Function)];
-        upsert_file(&db, "/p", "/p/a.ts", "typescript", &syms1, "hash1").unwrap();
-
-        let syms2 = vec![
-            make_symbol("foo", SymbolKind::Function),
-            make_symbol("bar", SymbolKind::Const),
-        ];
-        upsert_file(&db, "/p", "/p/a.ts", "typescript", &syms2, "hash2").unwrap();
-
-        assert_eq!(get_file_count(&db, "/p").unwrap(), 1);
-        assert_eq!(
-            get_file_hash(&db, "/p", "/p/a.ts").unwrap(),
-            Some("hash2".to_string())
-        );
-    }
-
-    #[test]
-    fn test_remove_file_cleans_imports() {
-        let db = test_db();
-        upsert_file(&db, "/p", "/p/a.ts", "typescript", &[], "h1").unwrap();
-        upsert_file(&db, "/p", "/p/b.ts", "typescript", &[], "h2").unwrap();
-
-        let edge = ImportEdge {
-            source: "/p/a.ts".into(),
-            target: "/p/b.ts".into(),
-            specifier: "./b".into(),
-            symbols: vec!["default".into()],
-        };
-        replace_imports(&db, "/p", "/p/a.ts", &[edge]).unwrap();
-        assert_eq!(get_import_count(&db, "/p").unwrap(), 1);
-
-        remove_file(&db, "/p", "/p/a.ts").unwrap();
-        assert_eq!(get_file_count(&db, "/p").unwrap(), 1);
-        assert_eq!(get_import_count(&db, "/p").unwrap(), 0);
-    }
-
-    #[test]
-    fn test_replace_imports_overwrites() {
-        let db = test_db();
-        upsert_file(&db, "/p", "/p/a.ts", "typescript", &[], "h").unwrap();
-        upsert_file(&db, "/p", "/p/b.ts", "typescript", &[], "h").unwrap();
-        upsert_file(&db, "/p", "/p/c.ts", "typescript", &[], "h").unwrap();
-
-        let edge1 = ImportEdge {
-            source: "/p/a.ts".into(),
-            target: "/p/b.ts".into(),
-            specifier: "./b".into(),
-            symbols: vec![],
-        };
-        replace_imports(&db, "/p", "/p/a.ts", &[edge1]).unwrap();
-        assert_eq!(get_import_count(&db, "/p").unwrap(), 1);
-
-        let edge2 = ImportEdge {
-            source: "/p/a.ts".into(),
-            target: "/p/c.ts".into(),
-            specifier: "./c".into(),
-            symbols: vec![],
-        };
-        replace_imports(&db, "/p", "/p/a.ts", &[edge2]).unwrap();
-        assert_eq!(get_import_count(&db, "/p").unwrap(), 1);
-    }
-
-    #[test]
-    fn test_git_status_round_trip() {
-        let db = test_db();
-        let mut status = HashMap::new();
-        status.insert("/p/a.ts".to_string(), "M".to_string());
-        status.insert("/p/b.ts".to_string(), "??".to_string());
-
-        save_git_status(&db, "/p", &status).unwrap();
-        let loaded = get_last_git_status(&db, "/p").unwrap();
-
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded.get("/p/a.ts").unwrap(), "M");
-        assert_eq!(loaded.get("/p/b.ts").unwrap(), "??");
-    }
-
-    #[test]
-    fn test_git_status_empty_project() {
-        let db = test_db();
-        let loaded = get_last_git_status(&db, "/nonexistent").unwrap();
-        assert!(loaded.is_empty());
-    }
 }

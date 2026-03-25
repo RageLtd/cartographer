@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
 use rmcp::{tool, tool_router, ErrorData as McpError};
-use rusqlite::Connection;
+use tokio::runtime::Handle;
 
 use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
+use crate::db::client::Db;
 use crate::db::graph::{find_cycles, get_file_detail, search_files, walk_import_graph};
 use crate::db::queries::{
     get_file_count, get_import_count, get_language_counts, get_last_git_status, replace_imports,
@@ -19,20 +19,21 @@ use crate::server_types::{FileInfoInput, ParseFileInput, ProjectInput, QueryInpu
 
 #[derive(Clone)]
 pub struct CartographerServer {
-    pub(crate) db: Arc<Mutex<Connection>>,
+    pub(crate) db: Db,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
 impl CartographerServer {
-    pub fn new(db: Connection) -> Self {
+    pub fn new(db: Db) -> Self {
         Self {
-            db: Arc::new(Mutex::new(db)),
+            db,
             tool_router: Self::tool_router(),
         }
     }
 
-    pub fn db(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        self.db.lock().map_err(|e| e.to_string())
+    /// Bridge sync tool handlers to async DB calls
+    fn run_async<F: std::future::Future>(&self, fut: F) -> F::Output {
+        tokio::task::block_in_place(|| Handle::current().block_on(fut))
     }
 }
 
@@ -46,11 +47,6 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ParseFileInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
         let result = match parse_file(&input.file_path, None) {
             Ok(r) => r,
             Err(e) => {
@@ -71,18 +67,24 @@ impl CartographerServer {
             }
         };
 
-        upsert_file(
-            &db,
-            &input.project,
-            &input.file_path,
-            &result.language,
-            &result.symbols,
-            &hash,
-        )
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        self.run_async(async {
+            upsert_file(
+                &self.db,
+                &input.project,
+                &input.file_path,
+                &result.language,
+                &result.symbols,
+                &hash,
+            )
+            .await
+            .map_err(|e| McpError::internal_error(e, None))?;
 
-        replace_imports(&db, &input.project, &input.file_path, &result.imports)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            replace_imports(&self.db, &input.project, &input.file_path, &result.imports)
+                .await
+                .map_err(|e| McpError::internal_error(e, None))?;
+
+            Ok::<_, McpError>(())
+        })?;
 
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -130,30 +132,27 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let last_status = get_last_git_status(&db, &input.project)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let last_status = self
+            .run_async(get_last_git_status(&self.db, &input.project))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         let current_status = get_current_git_status(&input.project);
         let (modified, deleted) = diff_git_status(&last_status, &current_status);
 
         if modified.is_empty() && deleted.is_empty() {
-            save_git_status(&db, &input.project, &current_status)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            self.run_async(save_git_status(&self.db, &input.project, &current_status))
+                .map_err(|e| McpError::internal_error(e, None))?;
             return Ok(CallToolResult::success(vec![Content::text(
                 "No changes detected.",
             )]));
         }
 
-        let (indexed, removed) = incremental_index(&db, &input.project, &modified, &deleted)
+        let (indexed, removed) = self
+            .run_async(incremental_index(&self.db, &input.project, &modified, &deleted))
             .map_err(|e| McpError::internal_error(e, None))?;
 
-        save_git_status(&db, &input.project, &current_status)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        self.run_async(save_git_status(&self.db, &input.project, &current_status))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         #[derive(serde::Serialize)]
         struct ChangesOut {
@@ -179,18 +178,14 @@ impl CartographerServer {
         description = "Walk the import graph outward from entry point files. Returns dependencies and dependents up to a configurable depth. Entry points can be absolute paths or search terms."
     )]
     fn query(&self, Parameters(input): Parameters<QueryInput>) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
         let mut resolved_paths: Vec<String> = Vec::new();
         for entry in &input.entry_points {
             if entry.starts_with('/') {
                 resolved_paths.push(entry.clone());
             } else {
-                let results = search_files(&db, &input.project, entry, 5)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                let results = self
+                    .run_async(search_files(&self.db, &input.project, entry, 5))
+                    .map_err(|e| McpError::internal_error(e, None))?;
                 for (path, _) in results {
                     resolved_paths.push(path);
                 }
@@ -206,14 +201,15 @@ impl CartographerServer {
         let max_depth = input.max_depth.unwrap_or(DEFAULT_MAX_DEPTH);
         let max_results = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
 
-        let files = walk_import_graph(
-            &db,
-            &input.project,
-            &resolved_paths,
-            Some(max_depth),
-            Some(max_results),
-        )
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let files = self
+            .run_async(walk_import_graph(
+                &self.db,
+                &input.project,
+                &resolved_paths,
+                Some(max_depth),
+                Some(max_results),
+            ))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         #[derive(serde::Serialize)]
         struct QueryOut {
@@ -247,12 +243,8 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let (indexed, skipped) = full_index(&db, &input.project, &input.project)
+        let (indexed, skipped) = self
+            .run_async(full_index(&self.db, &input.project, &input.project))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -268,19 +260,17 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let total_files = self
+            .run_async(get_file_count(&self.db, &input.project))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
-        let total_files = get_file_count(&db, &input.project)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let import_count = self
+            .run_async(get_import_count(&self.db, &input.project))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
-        let import_count = get_import_count(&db, &input.project)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let languages = get_language_counts(&db, &input.project)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let languages = self
+            .run_async(get_language_counts(&self.db, &input.project))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -308,14 +298,10 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<SearchInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
         let limit = input.limit.unwrap_or(10);
-        let results = search_files(&db, &input.project, &input.query, limit)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let results = self
+            .run_async(search_files(&self.db, &input.project, &input.query, limit))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -361,13 +347,9 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<FileInfoInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let detail = get_file_detail(&db, &input.project, &input.file_path)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let detail = self
+            .run_async(get_file_detail(&self.db, &input.project, &input.file_path))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         let detail = match detail {
             Some(d) => d,
@@ -442,13 +424,9 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let cycles = find_cycles(&db, &input.project)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let cycles = self
+            .run_async(find_cycles(&self.db, &input.project))
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         if cycles.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -465,7 +443,7 @@ impl CartographerServer {
         let out: Vec<CycleOut> = cycles
             .into_iter()
             .map(|c| {
-                let length = c.len() - 1; // exclude the repeated closing element
+                let length = c.len() - 1;
                 let cycle: Vec<String> = c
                     .into_iter()
                     .map(|p| {
