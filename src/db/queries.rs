@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use surrealdb_types::SurrealValue;
 
 use super::client::Db;
 use crate::types::{ImportEdge, Symbol};
@@ -57,7 +57,7 @@ pub async fn upsert_file(
 }
 
 pub async fn get_file_hash(db: &Db, project: &str, file_path: &str) -> Result<Option<String>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         content_hash: String,
     }
@@ -129,7 +129,7 @@ pub async fn replace_imports(
 // ============================================================================
 
 pub async fn get_file_count(db: &Db, project: &str) -> Result<i64, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         count: i64,
     }
@@ -145,7 +145,7 @@ pub async fn get_file_count(db: &Db, project: &str) -> Result<i64, String> {
 }
 
 pub async fn get_language_counts(db: &Db, project: &str) -> Result<HashMap<String, usize>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         language: String,
         count: i64,
@@ -162,7 +162,7 @@ pub async fn get_language_counts(db: &Db, project: &str) -> Result<HashMap<Strin
 }
 
 pub async fn get_import_count(db: &Db, project: &str) -> Result<i64, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         count: i64,
     }
@@ -178,7 +178,7 @@ pub async fn get_import_count(db: &Db, project: &str) -> Result<i64, String> {
 }
 
 pub async fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         project: String,
         count: i64,
@@ -198,7 +198,7 @@ pub async fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
 // ============================================================================
 
 pub async fn get_last_git_status(db: &Db, project: &str) -> Result<HashMap<String, String>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         last_status: String,
     }

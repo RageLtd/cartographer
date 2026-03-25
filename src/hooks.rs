@@ -2,6 +2,7 @@ use std::io::{self, Read};
 use std::process::Command;
 
 use sonic_rs::JsonValueTrait;
+use surrealdb_types::SurrealValue;
 use tokio::runtime::Runtime;
 
 use crate::db::client::{connect, Db};
@@ -102,7 +103,7 @@ fn lookup_detail(db: &Db, rt: &Runtime, cwd: &str, path: &str) -> Option<FileDet
 }
 
 fn find_files_by_suffix(db: &Db, rt: &Runtime, project: &str, suffix: &str) -> Vec<String> {
-    #[derive(serde::Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         file_path: String,
     }
@@ -446,8 +447,8 @@ fn git_changed_files(cwd: &str) -> Vec<(String, String, String)> {
 // --- Prompt parsing helpers ---
 
 const FILE_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "rs", "rb", "ex", "exs", "py", "go", "java", "c", "h", "cpp",
-    "hpp", "css", "scss", "vue", "svelte", "json", "toml", "yaml", "yml", "md",
+    "ts", "tsx", "js", "jsx", "rs", "rb", "ex", "exs", "py", "go", "java", "c", "h", "cpp", "hpp",
+    "css", "scss", "vue", "svelte", "json", "toml", "yaml", "yml", "md",
 ];
 
 fn extract_file_mentions(text: &str) -> Vec<String> {

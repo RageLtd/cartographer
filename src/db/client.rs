@@ -18,8 +18,8 @@ pub async fn connect() -> Result<Db, String> {
         .map_err(|e| format!("Failed to connect to SurrealDB at {url}: {e}"))?;
 
     db.signin(Root {
-        username: &user,
-        password: &pass,
+        username: user,
+        password: pass,
     })
     .await
     .map_err(|e| format!("Failed to authenticate with SurrealDB: {e}"))?;

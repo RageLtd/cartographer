@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use serde::Deserialize;
+use surrealdb_types::SurrealValue;
 
 use super::client::Db;
 use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
@@ -80,7 +80,7 @@ pub async fn walk_import_graph(
 }
 
 async fn get_imports_from(db: &Db, project: &str, source_path: &str) -> Result<Vec<String>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         target_path: String,
     }
@@ -97,7 +97,7 @@ async fn get_imports_from(db: &Db, project: &str, source_path: &str) -> Result<V
 }
 
 async fn get_importers_of(db: &Db, project: &str, target_path: &str) -> Result<Vec<String>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         source_path: String,
     }
@@ -114,7 +114,7 @@ async fn get_importers_of(db: &Db, project: &str, target_path: &str) -> Result<V
 }
 
 async fn get_file_symbols(db: &Db, project: &str, file_path: &str) -> Result<Vec<Symbol>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         symbols: String,
     }
@@ -142,7 +142,7 @@ pub async fn search_files(
     query: &str,
     limit: i64,
 ) -> Result<Vec<(String, Vec<Symbol>)>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Row {
         file_path: String,
         symbols: String,
@@ -177,7 +177,7 @@ pub async fn search_files(
 // ============================================================================
 
 pub async fn find_cycles(db: &Db, project: &str) -> Result<Vec<Vec<String>>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct Edge {
         source_path: String,
         target_path: String,
@@ -264,7 +264,7 @@ pub async fn get_file_detail(
     project: &str,
     file_path: &str,
 ) -> Result<Option<FileDetail>, String> {
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct FileRow {
         language: String,
         symbols: String,
@@ -285,7 +285,7 @@ pub async fn get_file_detail(
 
     let symbols: Vec<Symbol> = sonic_rs::from_str(&file_row.symbols).unwrap_or_default();
 
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct ImportRow {
         target_path: String,
         symbols: String,
@@ -307,7 +307,7 @@ pub async fn get_file_detail(
         })
         .collect();
 
-    #[derive(Deserialize)]
+    #[derive(SurrealValue)]
     struct DepRow {
         source_path: String,
         symbols: String,
