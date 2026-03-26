@@ -47,3 +47,9 @@ pub struct FileInfoInput {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 pub struct EmptyInput {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct RulesInput {
+    /// Project root directory (absolute path). If omitted, uses CWD / PROJECT_ROOT.
+    pub project: Option<String>,
+}
