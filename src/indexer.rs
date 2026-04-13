@@ -5,7 +5,9 @@ use std::process::Command;
 
 use crate::constants::{SKIP_DIRS, SUPPORTED_EXTENSIONS};
 use crate::db::client::Db;
-use crate::db::queries::{get_file_hash, remove_file, replace_imports, save_git_status, upsert_file};
+use crate::db::queries::{
+    get_file_hash, remove_file, replace_imports, save_git_status, upsert_file,
+};
 use crate::parser::{hash_file, parse_file};
 
 // ============================================================================
@@ -151,7 +153,15 @@ pub async fn index_single_file(db: &Db, project: &str, file_path: &str) -> Resul
     }
 
     let result = parse_file(file_path, None)?;
-    upsert_file(db, project, file_path, &result.language, &result.symbols, &hash).await?;
+    upsert_file(
+        db,
+        project,
+        file_path,
+        &result.language,
+        &result.symbols,
+        &hash,
+    )
+    .await?;
     replace_imports(db, project, file_path, &result.imports).await?;
     Ok(())
 }

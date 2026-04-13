@@ -15,20 +15,45 @@ use crate::db::queries::{
 };
 use crate::indexer::{diff_git_status, full_index, get_current_git_status, incremental_index};
 use crate::parser::{hash_file, parse_file};
-use crate::server_types::{EmptyInput, FileInfoInput, ParseFileInput, ProjectInput, QueryInput, RulesInput, SearchInput};
+use crate::server_types::{
+    EmptyInput, FileInfoInput, ParseFileInput, ProjectInput, QueryInput, RulesInput, SearchInput,
+};
 
 #[derive(Clone)]
 pub struct CartographerServer {
-    pub(crate) db: Db,
+    pub(crate) db: Option<Db>,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
 impl CartographerServer {
+    /// Full mode: DB connected, all tools available.
     pub fn new(db: Db) -> Self {
         Self {
-            db,
+            db: Some(db),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Parse-only mode: no DB, only parsing tools work.
+    /// Query/search/stats tools return errors guiding the caller
+    /// to use the server-side equivalents.
+    pub fn parse_only() -> Self {
+        Self {
+            db: None,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Get the DB reference, or return an MCP error if in parse-only mode.
+    fn require_db(&self) -> Result<&Db, McpError> {
+        self.db.as_ref().ok_or_else(|| {
+            McpError::internal_error(
+                "This tool requires a database connection. In parse-only mode, \
+                 use the server-side equivalent (cartographer_query, \
+                 cartographer_search, etc. on mimir-server).",
+                None,
+            )
+        })
     }
 
     /// Bridge sync tool handlers to async DB calls
@@ -69,7 +94,7 @@ impl CartographerServer {
 impl CartographerServer {
     #[tool(
         name = "cartographer_parse_file",
-        description = "Parse a file's AST using Tree-sitter to extract its imports and symbols. Stores the results in the import graph database. Supports: TypeScript, JavaScript, TSX, JSX, Rust."
+        description = "Parse a file's AST using Tree-sitter to extract its imports and symbols. In full mode, stores results in the database. In parse-only mode, returns results without storage. Supports: TypeScript, JavaScript, TSX, JSX, Rust, Ruby, Elixir."
     )]
     fn parse_file_tool(
         &self,
@@ -95,24 +120,27 @@ impl CartographerServer {
             }
         };
 
-        self.run_async(async {
-            upsert_file(
-                &self.db,
-                &input.project,
-                &input.file_path,
-                &result.language,
-                &result.symbols,
-                &hash,
-            )
-            .await
-            .map_err(|e| McpError::internal_error(e, None))?;
-
-            replace_imports(&self.db, &input.project, &input.file_path, &result.imports)
+        // Store in DB if available (full mode); skip in parse-only mode.
+        if let Some(db) = &self.db {
+            self.run_async(async {
+                upsert_file(
+                    db,
+                    &input.project,
+                    &input.file_path,
+                    &result.language,
+                    &result.symbols,
+                    &hash,
+                )
                 .await
                 .map_err(|e| McpError::internal_error(e, None))?;
 
-            Ok::<_, McpError>(())
-        })?;
+                replace_imports(db, &input.project, &input.file_path, &result.imports)
+                    .await
+                    .map_err(|e| McpError::internal_error(e, None))?;
+
+                Ok::<_, McpError>(())
+            })?;
+        }
 
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -160,27 +188,51 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let last_status = self
-            .run_async(get_last_git_status(&self.db, &input.project))
-            .map_err(|e| McpError::internal_error(e, None))?;
+        // Get last known status from DB (or empty if parse-only)
+        let last_status = match &self.db {
+            Some(db) => self
+                .run_async(get_last_git_status(db, &input.project))
+                .map_err(|e| McpError::internal_error(e, None))?,
+            None => HashMap::new(),
+        };
 
         let current_status = get_current_git_status(&input.project);
         let (modified, deleted) = diff_git_status(&last_status, &current_status);
 
         if modified.is_empty() && deleted.is_empty() {
-            self.run_async(save_git_status(&self.db, &input.project, &current_status))
-                .map_err(|e| McpError::internal_error(e, None))?;
+            if let Some(db) = &self.db {
+                self.run_async(save_git_status(db, &input.project, &current_status))
+                    .map_err(|e| McpError::internal_error(e, None))?;
+            }
             return Ok(CallToolResult::success(vec![Content::text(
                 "No changes detected.",
             )]));
         }
 
-        let (indexed, removed) = self
-            .run_async(incremental_index(&self.db, &input.project, &modified, &deleted))
-            .map_err(|e| McpError::internal_error(e, None))?;
-
-        self.run_async(save_git_status(&self.db, &input.project, &current_status))
-            .map_err(|e| McpError::internal_error(e, None))?;
+        // In full mode, do incremental index (parse + store).
+        // In parse-only mode, just parse modified files and report.
+        let (indexed, removed) = match &self.db {
+            Some(db) => {
+                let result = self
+                    .run_async(incremental_index(db, &input.project, &modified, &deleted))
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                self.run_async(save_git_status(db, &input.project, &current_status))
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                result
+            }
+            None => {
+                // Parse-only: parse each modified file to validate, count results
+                let mut idx = 0usize;
+                for file_path in &modified {
+                    if std::path::Path::new(file_path).exists()
+                        && parse_file(file_path, None).is_ok()
+                    {
+                        idx += 1;
+                    }
+                }
+                (idx, deleted.len())
+            }
+        };
 
         #[derive(serde::Serialize)]
         struct ChangesOut {
@@ -206,13 +258,14 @@ impl CartographerServer {
         description = "Walk the import graph outward from entry point files. Returns dependencies and dependents up to a configurable depth. Entry points can be absolute paths or search terms."
     )]
     fn query(&self, Parameters(input): Parameters<QueryInput>) -> Result<CallToolResult, McpError> {
+        let db = self.require_db()?;
         let mut resolved_paths: Vec<String> = Vec::new();
         for entry in &input.entry_points {
             if entry.starts_with('/') {
                 resolved_paths.push(entry.clone());
             } else {
                 let results = self
-                    .run_async(search_files(&self.db, &input.project, entry, 5))
+                    .run_async(search_files(db, &input.project, entry, 5))
                     .map_err(|e| McpError::internal_error(e, None))?;
                 for (path, _) in results {
                     resolved_paths.push(path);
@@ -231,7 +284,7 @@ impl CartographerServer {
 
         let files = self
             .run_async(walk_import_graph(
-                &self.db,
+                db,
                 &input.project,
                 &resolved_paths,
                 Some(max_depth),
@@ -265,19 +318,38 @@ impl CartographerServer {
 
     #[tool(
         name = "cartographer_index_project",
-        description = "Perform a full index of all supported files in a project directory. Walks the file tree, parses each file with Tree-sitter, and stores the import graph."
+        description = "Perform a full index of all supported files in a project directory. Walks the file tree, parses each file with Tree-sitter. In full mode, stores the import graph. In parse-only mode, parses without storage."
     )]
     fn index_project(
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        let (indexed, skipped) = self
-            .run_async(full_index(&self.db, &input.project, &input.project))
-            .map_err(|e| McpError::internal_error(e, None))?;
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Indexed {indexed} files ({skipped} skipped)."
-        ))]))
+        match &self.db {
+            Some(db) => {
+                let (indexed, skipped) = self
+                    .run_async(full_index(db, &input.project, &input.project))
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Indexed {indexed} files ({skipped} skipped)."
+                ))]))
+            }
+            None => {
+                // Parse-only: walk and parse files, report counts
+                use crate::indexer::walk_project_files;
+                let files = walk_project_files(&input.project);
+                let mut indexed = 0usize;
+                let mut skipped = 0usize;
+                for file_path in &files {
+                    match parse_file(file_path, None) {
+                        Ok(_) => indexed += 1,
+                        Err(_) => skipped += 1,
+                    }
+                }
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Parsed {indexed} files ({skipped} skipped). (parse-only mode, no storage)"
+                ))]))
+            }
+        }
     }
 
     #[tool(
@@ -288,16 +360,17 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
+        let db = self.require_db()?;
         let total_files = self
-            .run_async(get_file_count(&self.db, &input.project))
+            .run_async(get_file_count(db, &input.project))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let import_count = self
-            .run_async(get_import_count(&self.db, &input.project))
+            .run_async(get_import_count(db, &input.project))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let languages = self
-            .run_async(get_language_counts(&self.db, &input.project))
+            .run_async(get_language_counts(db, &input.project))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         #[derive(serde::Serialize)]
@@ -326,9 +399,10 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<SearchInput>,
     ) -> Result<CallToolResult, McpError> {
+        let db = self.require_db()?;
         let limit = input.limit.unwrap_or(10);
         let results = self
-            .run_async(search_files(&self.db, &input.project, &input.query, limit))
+            .run_async(search_files(db, &input.project, &input.query, limit))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         if results.is_empty() {
@@ -375,8 +449,9 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<FileInfoInput>,
     ) -> Result<CallToolResult, McpError> {
+        let db = self.require_db()?;
         let detail = self
-            .run_async(get_file_detail(&self.db, &input.project, &input.file_path))
+            .run_async(get_file_detail(db, &input.project, &input.file_path))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let detail = match detail {
@@ -452,8 +527,9 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
+        let db = self.require_db()?;
         let cycles = self
-            .run_async(find_cycles(&self.db, &input.project))
+            .run_async(find_cycles(db, &input.project))
             .map_err(|e| McpError::internal_error(e, None))?;
 
         if cycles.is_empty() {
@@ -495,10 +571,7 @@ impl CartographerServer {
         name = "cartographer_rules",
         description = "Load project rules and conventions files. Scans for CLAUDE.md, AGENTS.md, .cursorrules, .claude/rules/**/*.md, and .claude/settings.json. Returns all found rules with their source paths. Call this at session start to understand project conventions."
     )]
-    fn rules(
-        &self,
-        Parameters(input): Parameters<RulesInput>,
-    ) -> Result<CallToolResult, McpError> {
+    fn rules(&self, Parameters(input): Parameters<RulesInput>) -> Result<CallToolResult, McpError> {
         let project = match input.project {
             Some(p) if !p.is_empty() => p,
             _ => {

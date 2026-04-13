@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "cartographer"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "md-5",
  "rmcp",

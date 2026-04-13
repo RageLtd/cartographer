@@ -39,7 +39,10 @@ impl ServerHandler for CartographerServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         if request.uri == "cartographer://project" {
-            let stats = get_project_stats(&self.db)
+            let db = self.db.as_ref().ok_or_else(|| {
+                McpError::internal_error("Resource not available in parse-only mode.", None)
+            })?;
+            let stats = get_project_stats(db)
                 .await
                 .map_err(|e| McpError::internal_error(e, None))?;
 

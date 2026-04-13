@@ -79,7 +79,11 @@ pub async fn walk_import_graph(
     Ok(results)
 }
 
-async fn get_imports_from(db: &Db, project: &str, source_path: &str) -> Result<Vec<String>, String> {
+async fn get_imports_from(
+    db: &Db,
+    project: &str,
+    source_path: &str,
+) -> Result<Vec<String>, String> {
     #[derive(SurrealValue)]
     struct Row {
         target_path: String,
@@ -96,7 +100,11 @@ async fn get_imports_from(db: &Db, project: &str, source_path: &str) -> Result<V
     Ok(rows.into_iter().map(|r| r.target_path).collect())
 }
 
-async fn get_importers_of(db: &Db, project: &str, target_path: &str) -> Result<Vec<String>, String> {
+async fn get_importers_of(
+    db: &Db,
+    project: &str,
+    target_path: &str,
+) -> Result<Vec<String>, String> {
     #[derive(SurrealValue)]
     struct Row {
         source_path: String,

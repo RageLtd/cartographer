@@ -26,7 +26,11 @@ pub async fn upsert_file(
     content_hash: &str,
 ) -> Result<(), String> {
     let symbols_json = sonic_rs::to_string(symbols).unwrap_or_else(|_| "[]".to_string());
-    let symbol_names: String = symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" ");
+    let symbol_names: String = symbols
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let searchable = format!("{file_path} {symbol_names}");
     let now = epoch_ms();
 
@@ -56,7 +60,11 @@ pub async fn upsert_file(
     Ok(())
 }
 
-pub async fn get_file_hash(db: &Db, project: &str, file_path: &str) -> Result<Option<String>, String> {
+pub async fn get_file_hash(
+    db: &Db,
+    project: &str,
+    file_path: &str,
+) -> Result<Option<String>, String> {
     #[derive(SurrealValue)]
     struct Row {
         content_hash: String,
@@ -158,7 +166,10 @@ pub async fn get_language_counts(db: &Db, project: &str) -> Result<HashMap<Strin
         .map_err(|e| e.to_string())?;
 
     let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().map(|r| (r.language, r.count as usize)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.language, r.count as usize))
+        .collect())
 }
 
 pub async fn get_import_count(db: &Db, project: &str) -> Result<i64, String> {
@@ -197,7 +208,10 @@ pub async fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
 // Git state tracking
 // ============================================================================
 
-pub async fn get_last_git_status(db: &Db, project: &str) -> Result<HashMap<String, String>, String> {
+pub async fn get_last_git_status(
+    db: &Db,
+    project: &str,
+) -> Result<HashMap<String, String>, String> {
     #[derive(SurrealValue)]
     struct Row {
         last_status: String,
