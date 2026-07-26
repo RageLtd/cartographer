@@ -3,4 +3,12 @@ target/
 *.db-wal
 *.db-shm
 .DS_Store
-.claude
+
+# Local Claude Code state stays out of git, but the vendored rule set is
+# committed so collaborators and CI get it from a plain clone. Note the
+# `.claude/*` form: git cannot re-include a path whose parent directory is
+# excluded, so a bare `.claude` would make the negations below dead letters.
+.claude/*
+!.claude/rules/
+!.claude/rules-lock.json
+!.claude/rules-check.mjs
