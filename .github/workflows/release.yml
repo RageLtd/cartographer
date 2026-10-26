@@ -72,24 +72,36 @@ jobs:
           echo "No conventional commits found that require a version bump." >> $GITHUB_STEP_SUMMARY
 
   build-binaries:
-    name: Build (${{ matrix.platform }})
+    name: Build (${{ matrix.variant }}, ${{ matrix.platform }})
     needs: [version-bump]
     if: needs.version-bump.outputs.should_release == 'true'
     strategy:
       matrix:
+        platform: [darwin-arm64, darwin-x64, linux-x64, windows-x64]
+        variant: [full, parse-only]
         include:
-          - os: macos-latest
+          - platform: darwin-arm64
+            os: macos-latest
             target: aarch64-apple-darwin
-            platform: darwin-arm64
-          - os: macos-latest
+          - platform: darwin-x64
+            os: macos-latest
             target: x86_64-apple-darwin
-            platform: darwin-x64
-          - os: ubuntu-latest
+          - platform: linux-x64
+            os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            platform: linux-x64
-          - os: windows-latest
+          - platform: windows-x64
+            os: windows-latest
             target: x86_64-pc-windows-msvc
-            platform: windows-x64
+          # Full build: default features (SurrealDB storage). Keeps the historical
+          # asset name that scripts/ensure-binary.sh downloads.
+          - variant: full
+            cargo_flags: ""
+            asset: cartographer
+          # Parse-only build for mimir: no surrealdb crate compiled in; mimir-acp
+          # owns storage and drives this binary as a pure parser.
+          - variant: parse-only
+            cargo_flags: --no-default-features
+            asset: cartographer-parse-only
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -107,7 +119,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.cargo_flags }}
 
       - name: Sign binary (macOS)
         if: startsWith(matrix.platform, 'darwin')
@@ -115,25 +127,25 @@ jobs:
 
       - name: Rename binary (Unix)
         if: runner.os != 'Windows'
-        run: cp target/${{ matrix.target }}/release/cartographer cartographer-${{ matrix.platform }}
+        run: cp target/${{ matrix.target }}/release/cartographer ${{ matrix.asset }}-${{ matrix.platform }}
 
       - name: Rename binary (Windows)
         if: runner.os == 'Windows'
-        run: copy target\${{ matrix.target }}\release\cartographer.exe cartographer-${{ matrix.platform }}.exe
+        run: copy target\${{ matrix.target }}\release\cartographer.exe ${{ matrix.asset }}-${{ matrix.platform }}.exe
 
       - name: Upload binary (Unix)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: cartographer-${{ matrix.platform }}
-          path: cartographer-${{ matrix.platform }}
+          name: ${{ matrix.asset }}-${{ matrix.platform }}
+          path: ${{ matrix.asset }}-${{ matrix.platform }}
 
       - name: Upload binary (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: cartographer-${{ matrix.platform }}
-          path: cartographer-${{ matrix.platform }}.exe
+          name: ${{ matrix.asset }}-${{ matrix.platform }}
+          path: ${{ matrix.asset }}-${{ matrix.platform }}.exe
 
   release:
     name: Create Release
@@ -157,13 +169,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_VERSION: ${{ needs.version-bump.outputs.new_version }}
         run: |
+          # Both variants for every platform: cartographer-<platform> (full, with
+          # SurrealDB) and cartographer-parse-only-<platform> (no storage, for mimir).
           gh release create "v${NEW_VERSION}" \
             --title "v${NEW_VERSION}" \
             --generate-notes \
             dist/cartographer-darwin-arm64 \
             dist/cartographer-darwin-x64 \
             dist/cartographer-linux-x64 \
-            dist/cartographer-windows-x64.exe
+            dist/cartographer-windows-x64.exe \
+            dist/cartographer-parse-only-darwin-arm64 \
+            dist/cartographer-parse-only-darwin-x64 \
+            dist/cartographer-parse-only-linux-x64 \
+            dist/cartographer-parse-only-windows-x64.exe
 
       - name: Notify marketplace
         env:
@@ -183,8 +201,14 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** v${NEW_VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Assets:**" >> $GITHUB_STEP_SUMMARY
+          echo "**Assets (full, with SurrealDB storage):**" >> $GITHUB_STEP_SUMMARY
           echo "- cartographer-darwin-arm64 (macOS M1/M2/M3)" >> $GITHUB_STEP_SUMMARY
           echo "- cartographer-darwin-x64 (macOS Intel)" >> $GITHUB_STEP_SUMMARY
           echo "- cartographer-linux-x64" >> $GITHUB_STEP_SUMMARY
           echo "- cartographer-windows-x64.exe" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Assets (parse-only, no storage — for mimir):**" >> $GITHUB_STEP_SUMMARY
+          echo "- cartographer-parse-only-darwin-arm64" >> $GITHUB_STEP_SUMMARY
+          echo "- cartographer-parse-only-darwin-x64" >> $GITHUB_STEP_SUMMARY
+          echo "- cartographer-parse-only-linux-x64" >> $GITHUB_STEP_SUMMARY
+          echo "- cartographer-parse-only-windows-x64.exe" >> $GITHUB_STEP_SUMMARY

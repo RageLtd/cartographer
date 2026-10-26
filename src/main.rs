@@ -1,13 +1,17 @@
 mod cli;
 mod constants;
 mod db;
+mod grammars;
 mod handler;
 mod hooks;
 mod indexer;
+mod parse_cli;
 mod parser;
 mod server;
 mod server_types;
 mod types;
+
+use std::sync::Arc;
 
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
@@ -22,11 +26,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // CLI hook subcommands (hook:context, hook:prompt, etc.)
     if args.len() > 1 && !args[1].starts_with("--") {
-        cli::run(&args[1]);
+        cli::run(&args[1..]);
         return Ok(());
     }
 
-    let parse_only = args.iter().any(|a| a == "--parse-only");
+    let parse_only_flag = args.iter().any(|a| a == "--parse-only");
+    // Without the `surrealdb` feature there is no storage backend to connect to.
+    let parse_only = parse_only_flag || !cfg!(feature = "surrealdb");
 
     // MCP server mode
     tracing_subscriber::fmt()
@@ -34,11 +40,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
+    let report = grammars::load_registry();
+    grammars::log_report(&report);
+    let registry = Arc::new(report.registry);
+
     if parse_only {
         // Parse-only mode: no DB connection required. Parsing tools work,
         // query/search/stats tools return errors. mimir-acp handles storage.
+        if !parse_only_flag {
+            tracing::info!(
+                "Built without the `surrealdb` feature; parse-only mode is the only mode"
+            );
+        }
         tracing::info!("Cartographer MCP server starting in parse-only mode (no DB)");
-        let server = CartographerServer::parse_only();
+        let server = CartographerServer::parse_only(registry);
         let service = server.serve(rmcp::transport::io::stdio()).await?;
         service.waiting().await?;
         return Ok(());
@@ -49,6 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Failed to connect to SurrealDB: {e}");
         e
     })?;
+
+    let server = CartographerServer::new(db, registry);
 
     // Auto-index CWD if it looks like a project directory.
     // Zed launches MCP servers with the project root as CWD.
@@ -61,10 +78,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if is_project {
             tracing::info!("Auto-indexing CWD: {cwd_str}");
-            let db_clone = db.clone();
-            let project = cwd_str.clone();
+            // The worker clones the whole server rather than `db` alone: without
+            // the `surrealdb` feature `Db` is uninhabited, and a bare `db.clone()`
+            // would make rustc treat everything after it as unreachable.
+            let worker = server.clone();
             tokio::spawn(async move {
-                match full_index(&db_clone, &project, &project).await {
+                let Some(db) = &worker.db else {
+                    tracing::error!("Auto-index skipped: server started in full mode without a DB");
+                    return;
+                };
+                match full_index(db, &worker.registry, &cwd_str, &cwd_str).await {
                     Ok((indexed, skipped)) => {
                         tracing::info!(
                             "Auto-index complete: {indexed} files indexed, {skipped} skipped"
@@ -80,7 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Cartographer MCP server starting on stdio (full mode)");
 
-    let server = CartographerServer::new(db);
     let service = server.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
 

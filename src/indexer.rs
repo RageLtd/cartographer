@@ -3,18 +3,22 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use crate::constants::{SKIP_DIRS, SUPPORTED_EXTENSIONS};
+use crate::constants::SKIP_DIRS;
 use crate::db::client::Db;
 use crate::db::queries::{
     get_file_hash, remove_file, replace_imports, save_git_status, upsert_file,
 };
+use crate::parser::registry::LanguageRegistry;
 use crate::parser::{hash_file, parse_file};
 
 // ============================================================================
 // Git status
 // ============================================================================
 
-pub fn get_current_git_status(project_root: &str) -> HashMap<String, String> {
+pub fn get_current_git_status(
+    registry: &LanguageRegistry,
+    project_root: &str,
+) -> HashMap<String, String> {
     let mut status = HashMap::new();
 
     let output = Command::new("git")
@@ -37,13 +41,7 @@ pub fn get_current_git_status(project_root: &str) -> HashMap<String, String> {
         let file_path = Path::new(project_root).join(file_rel);
         let file_path_str = file_path.to_string_lossy().to_string();
 
-        let ext = Path::new(&file_path_str)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{e}"))
-            .unwrap_or_default();
-
-        if !SUPPORTED_EXTENSIONS.contains(ext.as_str()) {
+        if !registry.supports_path(&file_path_str) {
             continue;
         }
 
@@ -83,21 +81,22 @@ pub fn diff_git_status(
 
 pub async fn full_index(
     db: &Db,
+    registry: &LanguageRegistry,
     project: &str,
     project_root: &str,
 ) -> Result<(usize, usize), String> {
-    let files = walk_project_files(project_root);
+    let files = walk_project_files(registry, project_root);
     let mut indexed = 0;
     let mut skipped = 0;
 
     for file_path in &files {
-        match index_single_file(db, project, file_path).await {
+        match index_single_file(db, registry, project, file_path).await {
             Ok(()) => indexed += 1,
             Err(_) => skipped += 1,
         }
     }
 
-    let status = get_current_git_status(project_root);
+    let status = get_current_git_status(registry, project_root);
     save_git_status(db, project, &status).await?;
 
     Ok((indexed, skipped))
@@ -109,6 +108,7 @@ pub async fn full_index(
 
 pub async fn incremental_index(
     db: &Db,
+    registry: &LanguageRegistry,
     project: &str,
     modified: &[String],
     deleted: &[String],
@@ -128,7 +128,7 @@ pub async fn incremental_index(
             continue;
         }
 
-        match index_single_file(db, project, file_path).await {
+        match index_single_file(db, registry, project, file_path).await {
             Ok(()) => indexed += 1,
             Err(e) => {
                 tracing::warn!("Failed to index {file_path}: {e}");
@@ -143,7 +143,12 @@ pub async fn incremental_index(
 // Single file index
 // ============================================================================
 
-pub async fn index_single_file(db: &Db, project: &str, file_path: &str) -> Result<(), String> {
+pub async fn index_single_file(
+    db: &Db,
+    registry: &LanguageRegistry,
+    project: &str,
+    file_path: &str,
+) -> Result<(), String> {
     let hash = hash_file(file_path)?;
 
     if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path).await {
@@ -152,7 +157,7 @@ pub async fn index_single_file(db: &Db, project: &str, file_path: &str) -> Resul
         }
     }
 
-    let result = parse_file(file_path, None)?;
+    let result = parse_file(registry, file_path, None)?;
     upsert_file(
         db,
         project,
@@ -170,13 +175,13 @@ pub async fn index_single_file(db: &Db, project: &str, file_path: &str) -> Resul
 // File walking
 // ============================================================================
 
-pub fn walk_project_files(dir: &str) -> Vec<String> {
+pub fn walk_project_files(registry: &LanguageRegistry, dir: &str) -> Vec<String> {
     let mut files = Vec::new();
-    walk_recursive(Path::new(dir), &mut files);
+    walk_recursive(registry, Path::new(dir), &mut files);
     files
 }
 
-fn walk_recursive(dir: &Path, files: &mut Vec<String>) {
+fn walk_recursive(registry: &LanguageRegistry, dir: &Path, files: &mut Vec<String>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -191,15 +196,10 @@ fn walk_recursive(dir: &Path, files: &mut Vec<String>) {
             if SKIP_DIRS.contains(name_str.as_ref()) || name_str.starts_with('.') {
                 continue;
             }
-            walk_recursive(&path, files);
+            walk_recursive(registry, &path, files);
         } else if path.is_file() {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| format!(".{e}"))
-                .unwrap_or_default();
-            if SUPPORTED_EXTENSIONS.contains(ext.as_str()) {
-                if let Some(s) = path.to_str() {
+            if let Some(s) = path.to_str() {
+                if registry.supports_path(s) {
                     files.push(s.to_string());
                 }
             }

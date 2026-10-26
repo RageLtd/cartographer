@@ -10,13 +10,13 @@ path = "src/main.rs"
 [dependencies]
 rmcp = { version = "1.2", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-ruby = "0.23"
 tree-sitter-elixir = "0.3"
-surrealdb = "3"
+surrealdb = { version = "3", optional = true }
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
 schemars = "1.2"
@@ -24,7 +24,16 @@ thiserror = "2"
 md-5 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-surrealdb-types = "3.0.4"
+surrealdb-types = { version = "3.0.4", optional = true }
+libloading = "0.9"
+regex = "1.13.1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = ["surrealdb"]
+# Storage backend. Without it the binary has no database dependency and always
+# runs in --parse-only mode (parsing tools work; graph/search/stats report
+# that storage is unavailable).
+surrealdb = ["dep:surrealdb", "dep:surrealdb-types"]

@@ -136,6 +136,35 @@ pub async fn replace_imports(
 // Stats
 // ============================================================================
 
+/// Indexed files in `project` whose path ends with `suffix` — resolves bare
+/// file mentions such as `auth.rs` to full paths.
+pub async fn find_files_by_suffix(
+    db: &Db,
+    project: &str,
+    suffix: &str,
+    limit: i64,
+) -> Result<Vec<String>, String> {
+    #[derive(SurrealValue)]
+    struct Row {
+        file_path: String,
+    }
+
+    let mut result = db
+        .query(
+            "SELECT file_path FROM cart_file WHERE project = $project AND file_path LIKE $pattern LIMIT $limit",
+        )
+        .bind(("project", project.to_string()))
+        .bind(("pattern", format!("%{suffix}")))
+        .bind(("limit", limit))
+        .await
+        .map_err(|e| format!("Failed to search files by suffix {suffix:?}: {e}"))?;
+
+    let rows: Vec<Row> = result
+        .take(0)
+        .map_err(|e| format!("Failed to read suffix search results: {e}"))?;
+    Ok(rows.into_iter().map(|r| r.file_path).collect())
+}
+
 pub async fn get_file_count(db: &Db, project: &str) -> Result<i64, String> {
     #[derive(SurrealValue)]
     struct Row {

@@ -2,12 +2,14 @@ use std::io::{self, Read};
 use std::process::Command;
 
 use sonic_rs::JsonValueTrait;
-use surrealdb_types::SurrealValue;
 use tokio::runtime::Runtime;
 
 use crate::db::client::{connect, Db};
 use crate::db::graph::{get_file_detail, FileDetail};
-use crate::db::queries::{get_file_count, get_import_count};
+use crate::db::queries::{find_files_by_suffix, get_file_count, get_import_count};
+
+/// How many indexed files a bare file mention in a prompt may expand to.
+const FILE_MENTION_MATCH_LIMIT: i64 = 3;
 
 // --- Hook I/O types ---
 
@@ -102,32 +104,6 @@ fn lookup_detail(db: &Db, rt: &Runtime, cwd: &str, path: &str) -> Option<FileDet
     rt.block_on(get_file_detail(db, cwd, path)).ok().flatten()
 }
 
-fn find_files_by_suffix(db: &Db, rt: &Runtime, project: &str, suffix: &str) -> Vec<String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        file_path: String,
-    }
-
-    let pattern = format!("%{suffix}");
-    let project_owned = project.to_string();
-    let result = rt.block_on(async {
-        let mut res = db
-            .query("SELECT file_path FROM cart_file WHERE project = $project AND file_path LIKE $pattern LIMIT 3")
-            .bind(("project", project_owned))
-            .bind(("pattern", pattern))
-            .await
-            .ok()?;
-        let rows: Vec<Row> = res.take(0).ok()?;
-        Some(rows)
-    });
-
-    result
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| r.file_path)
-        .collect()
-}
-
 // --- Hook handlers ---
 
 pub fn hook_context() {
@@ -192,7 +168,15 @@ pub fn hook_prompt() {
         let file_mentions = extract_file_mentions(prompt);
         let context_parts: Vec<String> = file_mentions
             .iter()
-            .flat_map(|mention| find_files_by_suffix(&db, &rt, cwd, mention))
+            .flat_map(|mention| {
+                rt.block_on(find_files_by_suffix(
+                    &db,
+                    cwd,
+                    mention,
+                    FILE_MENTION_MATCH_LIMIT,
+                ))
+                .unwrap_or_default()
+            })
             .filter_map(|path| {
                 let detail = lookup_detail(&db, &rt, cwd, &path)?;
                 format_prompt_file_context(cwd, &detail)

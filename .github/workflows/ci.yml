@@ -32,6 +32,12 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Check (without surrealdb feature)
+        run: cargo check --no-default-features
+
+      - name: Run tests (without surrealdb feature)
+        run: cargo test --no-default-features
+
   build:
     name: Build
     runs-on: ubuntu-latest

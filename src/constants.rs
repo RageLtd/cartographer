@@ -1,56 +1,32 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 pub const DEFAULT_MAX_DEPTH: i64 = 2;
 pub const DEFAULT_MAX_RESULTS: i64 = 20;
 
-#[derive(Debug, Clone)]
-pub struct LanguageConfig {
-    pub language: &'static str,
+pub const DATA_DIR_ENV: &str = "CARTOGRAPHER_HOME";
+pub const DATA_DIR_NAME: &str = ".cartographer";
+pub const GRAMMARS_DIR_NAME: &str = "grammars";
+
+/// Cartographer's per-user data directory: `$CARTOGRAPHER_HOME`, else `~/.cartographer`.
+/// `None` only when neither variable is set.
+pub fn data_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var(DATA_DIR_ENV) {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(DATA_DIR_NAME))
 }
 
-pub static LANGUAGE_CONFIG: LazyLock<HashMap<&'static str, LanguageConfig>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
-    m.insert(
-        ".ts",
-        LanguageConfig {
-            language: "typescript",
-        },
-    );
-    m.insert(".tsx", LanguageConfig { language: "tsx" });
-    m.insert(
-        ".js",
-        LanguageConfig {
-            language: "javascript",
-        },
-    );
-    m.insert(
-        ".jsx",
-        LanguageConfig {
-            language: "javascript",
-        },
-    );
-    m.insert(
-        ".mjs",
-        LanguageConfig {
-            language: "javascript",
-        },
-    );
-    m.insert(
-        ".cjs",
-        LanguageConfig {
-            language: "javascript",
-        },
-    );
-    m.insert(".rs", LanguageConfig { language: "rust" });
-    m.insert(".rb", LanguageConfig { language: "ruby" });
-    m.insert(".ex", LanguageConfig { language: "elixir" });
-    m.insert(".exs", LanguageConfig { language: "elixir" });
-    m
-});
-
-pub static SUPPORTED_EXTENSIONS: LazyLock<HashSet<&'static str>> =
-    LazyLock::new(|| LANGUAGE_CONFIG.keys().copied().collect());
+/// Where host-provided tree-sitter grammars are discovered.
+pub fn grammars_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join(GRAMMARS_DIR_NAME))
+}
 
 pub static SKIP_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
