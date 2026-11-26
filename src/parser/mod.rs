@@ -10,6 +10,7 @@ pub mod resolver;
 pub mod ruby;
 pub mod rust_ext;
 pub mod rust_modules;
+pub mod rust_use;
 pub mod ts_js;
 
 use std::fs;
@@ -28,7 +29,8 @@ use self::ts_js::extract_ts_js;
 pub fn parse_file(
     registry: &LanguageRegistry,
     file_path: &str,
-    crate_root: Option<&str>,
+    // Unused: the Rust extractor finds each file's crate root itself.
+    _crate_root: Option<&str>,
 ) -> Result<FileParseResult, String> {
     let lang = registry
         .for_path(file_path)
@@ -52,7 +54,7 @@ pub fn parse_file(
     let root = tree.root_node();
     let (imports, symbols) = match &lang.extractor {
         Extractor::TsJs => extract_ts_js(file_path, &content, root, &lang.name),
-        Extractor::Rust => extract_rust(file_path, &content, root, crate_root.unwrap_or(file_path)),
+        Extractor::Rust => extract_rust(file_path, &content, root),
         Extractor::Ruby => extract_ruby(file_path, &content, root),
         Extractor::Elixir => extract_elixir(file_path, &content, root),
         Extractor::Generic(generic) => extract_generic(file_path, &content, root, generic),

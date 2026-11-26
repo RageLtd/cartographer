@@ -3,24 +3,21 @@ use tree_sitter::Node;
 use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::{get_doc_comment, get_signature, strip_quotes};
-use super::resolver::{resolve_rust_mod_decl, resolve_rust_module, resolve_rust_path_attr};
+use super::resolver::{resolve_rust_mod_decl, resolve_rust_path_attr};
+use super::rust_modules::RootFileModules;
+use super::rust_use::use_edges;
 
-pub fn extract_rust(
-    file_path: &str,
-    source: &str,
-    root: Node,
-    crate_root: &str,
-) -> (Vec<ImportEdge>, Vec<Symbol>) {
+pub fn extract_rust(file_path: &str, source: &str, root: Node) -> (Vec<ImportEdge>, Vec<Symbol>) {
     let mut imports = Vec::new();
     let mut symbols = Vec::new();
     let source_bytes = source.as_bytes();
+    let mut root_files = RootFileModules::default();
 
     let mut cursor = root.walk();
     for node in root.children(&mut cursor) {
         match node.kind() {
             "use_declaration" => {
-                let edges = extract_rust_use(file_path, &node, source_bytes, crate_root);
-                imports.extend(edges);
+                imports.extend(use_edges(file_path, &node, source_bytes, &mut root_files));
             }
             "mod_item" => {
                 if let Some(edge) = extract_rust_mod(file_path, &node, source_bytes) {
@@ -112,51 +109,6 @@ fn get_impl_name(node: &Node, source_bytes: &[u8]) -> Option<String> {
     None
 }
 
-fn extract_rust_use(
-    file_path: &str,
-    node: &Node,
-    source_bytes: &[u8],
-    crate_root: &str,
-) -> Vec<ImportEdge> {
-    let mut edges = Vec::new();
-
-    let path_text = match extract_rust_use_path(node, source_bytes) {
-        Some(p) => p,
-        None => return edges,
-    };
-
-    if let Some(resolved) = resolve_rust_module(&path_text, file_path, crate_root) {
-        let segments: Vec<&str> = path_text.split("::").collect();
-        let symbol = segments.last().copied().unwrap_or("");
-        edges.push(ImportEdge {
-            source: file_path.to_string(),
-            target: resolved,
-            specifier: path_text.clone(),
-            symbols: if symbol == "*" {
-                vec!["*".to_string()]
-            } else {
-                vec![symbol.to_string()]
-            },
-        });
-    }
-
-    edges
-}
-
-fn extract_rust_use_path(node: &Node, source_bytes: &[u8]) -> Option<String> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "scoped_identifier" | "scoped_use_list" | "use_wildcard" | "identifier"
-            | "use_as_clause" => {
-                return child.utf8_text(source_bytes).ok().map(|s| s.to_string());
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 fn extract_rust_mod(file_path: &str, node: &Node, source_bytes: &[u8]) -> Option<ImportEdge> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -242,7 +194,7 @@ impl Config {
 }
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         assert!(symbols
             .iter()
@@ -263,7 +215,7 @@ impl Config {
 pub fn documented() {}
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let sym = symbols.iter().find(|s| s.name == "documented").unwrap();
         assert!(sym.doc_comment.is_some());
@@ -280,7 +232,7 @@ pub(crate) fn crate_fn() {}
 fn private_fn() {}
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let pub_fn = symbols.iter().find(|s| s.name == "public_fn").unwrap();
         assert_eq!(pub_fn.visibility, Visibility::Public);
@@ -302,7 +254,7 @@ pub enum Color {
 }
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let color = symbols.iter().find(|s| s.name == "Color").unwrap();
         assert_eq!(color.kind, SymbolKind::Enum);
@@ -317,7 +269,7 @@ pub trait Drawable {
 }
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let t = symbols.iter().find(|s| s.name == "Drawable").unwrap();
         assert_eq!(t.kind, SymbolKind::Trait);
@@ -327,7 +279,7 @@ pub trait Drawable {
     fn test_rust_const_extraction() {
         let source = "pub const MAX_SIZE: usize = 1024;\n";
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let c = symbols.iter().find(|s| s.name == "MAX_SIZE").unwrap();
         assert_eq!(c.kind, SymbolKind::Const);
@@ -337,7 +289,7 @@ pub trait Drawable {
     fn test_rust_type_alias() {
         let source = "pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;\n";
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let t = symbols.iter().find(|s| s.name == "Result").unwrap();
         assert_eq!(t.kind, SymbolKind::Type);
@@ -351,7 +303,7 @@ macro_rules! say_hello {
 }
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let m = symbols.iter().find(|s| s.name == "say_hello").unwrap();
         assert_eq!(m.kind, SymbolKind::Macro);
@@ -369,7 +321,7 @@ impl std::fmt::Display for Foo {
 }
 "#;
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let impl_sym = symbols.iter().find(|s| s.kind == SymbolKind::Impl).unwrap();
         assert_eq!(impl_sym.name, "Foo");
@@ -379,7 +331,7 @@ impl std::fmt::Display for Foo {
     fn test_rust_pub_super_visibility() {
         let source = "pub(super) fn parent_visible() {}\n";
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let sym = symbols.iter().find(|s| s.name == "parent_visible").unwrap();
         assert_eq!(sym.visibility, Visibility::PubSuper);
@@ -393,7 +345,7 @@ mod tests {
 }
 "#;
         let tree = parse_rust_code(source);
-        let (imports, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (imports, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         assert!(imports.is_empty());
         let mod_sym = symbols.iter().find(|s| s.name == "tests").unwrap();
@@ -404,7 +356,7 @@ mod tests {
     fn test_rust_line_numbers() {
         let source = "pub fn first() {}\n\npub fn third() {}\n";
         let tree = parse_rust_code(source);
-        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node(), "/");
+        let (_, symbols) = extract_rust("/test.rs", source, tree.root_node());
 
         let first = symbols.iter().find(|s| s.name == "first").unwrap();
         assert_eq!(first.line, 1);
