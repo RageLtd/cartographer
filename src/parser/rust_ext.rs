@@ -2,8 +2,8 @@ use tree_sitter::Node;
 
 use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
 
-use super::extractor::{get_doc_comment, get_signature};
-use super::resolver::{resolve_rust_mod_decl, resolve_rust_module};
+use super::extractor::{get_doc_comment, get_signature, strip_quotes};
+use super::resolver::{resolve_rust_mod_decl, resolve_rust_module, resolve_rust_path_attr};
 
 pub fn extract_rust(
     file_path: &str,
@@ -167,7 +167,10 @@ fn extract_rust_mod(file_path: &str, node: &Node, source_bytes: &[u8]) -> Option
 
     let name_node = node.child_by_field_name("name")?;
     let mod_name = name_node.utf8_text(source_bytes).ok()?;
-    let resolved = resolve_rust_mod_decl(mod_name, file_path)?;
+    let resolved = match path_attribute(node, source_bytes) {
+        Some(path) => resolve_rust_path_attr(path, file_path)?,
+        None => resolve_rust_mod_decl(mod_name, file_path)?,
+    };
 
     Some(ImportEdge {
         source: file_path.to_string(),
@@ -175,6 +178,38 @@ fn extract_rust_mod(file_path: &str, node: &Node, source_bytes: &[u8]) -> Option
         specifier: format!("mod {mod_name}"),
         symbols: vec![mod_name.to_string()],
     })
+}
+
+/// The `P` of a `#[path = "P"]` attached to `mod_item`. Outer attributes are
+/// the item's preceding siblings, so the walk stops at the first other item.
+fn path_attribute<'a>(mod_item: &Node, source_bytes: &'a [u8]) -> Option<&'a str> {
+    let mut sibling = mod_item.prev_sibling();
+    while let Some(node) = sibling {
+        match node.kind() {
+            "attribute_item" => {
+                if let Some(path) = path_attribute_value(&node, source_bytes) {
+                    return Some(path);
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => return None,
+        }
+        sibling = node.prev_sibling();
+    }
+    None
+}
+
+fn path_attribute_value<'a>(attribute_item: &Node, source_bytes: &'a [u8]) -> Option<&'a str> {
+    let attribute = attribute_item.named_child(0)?;
+    let name = attribute.named_child(0)?;
+    if name.kind() != "identifier" || name.utf8_text(source_bytes).ok()? != "path" {
+        return None;
+    }
+    let value = attribute.child_by_field_name("value")?;
+    if value.kind() != "string_literal" {
+        return None;
+    }
+    Some(strip_quotes(value.utf8_text(source_bytes).ok()?))
 }
 
 #[cfg(test)]
