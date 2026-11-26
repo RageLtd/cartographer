@@ -412,3 +412,6 @@ fn path_attribute_applies_only_to_its_own_mod_item() {
         ]
     );
 }
+
+#[path = "rust_use_tests.rs"]
+mod use_decls;
