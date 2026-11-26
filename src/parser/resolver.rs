@@ -98,6 +98,16 @@ pub fn resolve_rust_mod_decl(mod_name: &str, from_file: &str) -> Option<String> 
         .map(str::to_string)
 }
 
+/// Resolve the `P` of a `#[path = "P"]` on a file-level `mod` item, which is
+/// relative to the declaring file's directory whatever kind of file it is.
+pub fn resolve_rust_path_attr(path: &str, from_file: &str) -> Option<String> {
+    let candidate = normalize_path(&Path::new(from_file).parent()?.join(path));
+    if !candidate.is_file() {
+        return None;
+    }
+    candidate.to_str().map(str::to_string)
+}
+
 /// Resolve a Ruby require or require_relative to a file path.
 pub fn resolve_ruby_require(specifier: &str, from_file: &str, is_relative: bool) -> Option<String> {
     if is_relative {
