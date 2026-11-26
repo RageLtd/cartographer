@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::rust_modules::child_module_dir;
+use super::rust_modules::{child_module_dir, child_module_file};
 
 const TS_JS_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs"];
 
@@ -45,55 +45,9 @@ pub fn resolve_ts_js_import(specifier: &str, from_file: &str) -> Option<String> 
     None
 }
 
-const RUST_PATH_CRATE: &str = "crate::";
-const RUST_PATH_SELF: &str = "self::";
-const RUST_PATH_SUPER: &str = "super::";
-
-pub fn resolve_rust_module(module_path: &str, from_file: &str, crate_root: &str) -> Option<String> {
-    // Anything not rooted at one of these prefixes is an external crate — skip.
-    let (prefix, segments_str) = [RUST_PATH_CRATE, RUST_PATH_SELF, RUST_PATH_SUPER]
-        .into_iter()
-        .find_map(|prefix| module_path.strip_prefix(prefix).map(|rest| (prefix, rest)))?;
-
-    let base_dir = match prefix {
-        RUST_PATH_CRATE => PathBuf::from(crate_root),
-        RUST_PATH_SELF => Path::new(from_file).parent()?.to_path_buf(),
-        RUST_PATH_SUPER => Path::new(from_file).parent()?.parent()?.to_path_buf(),
-        _ => return None,
-    };
-
-    let segments: Vec<&str> = segments_str.split("::").collect();
-    if segments.is_empty() {
-        return None;
-    }
-
-    let mut rel_path = base_dir;
-    for seg in &segments {
-        rel_path = rel_path.join(seg);
-    }
-
-    // Try as file: foo/bar.rs
-    let as_file = rel_path.with_extension("rs");
-    if as_file.exists() {
-        return as_file.to_str().map(|s| s.to_string());
-    }
-
-    // Try as directory: foo/bar/mod.rs
-    let as_mod = rel_path.join("mod.rs");
-    if as_mod.exists() {
-        return as_mod.to_str().map(|s| s.to_string());
-    }
-
-    None
-}
-
 pub fn resolve_rust_mod_decl(mod_name: &str, from_file: &str) -> Option<String> {
     let dir = child_module_dir(Path::new(from_file))?;
-    let as_file = dir.join(format!("{mod_name}.rs"));
-    let as_mod = dir.join(mod_name).join("mod.rs");
-    [as_file, as_mod]
-        .into_iter()
-        .find(|path| path.exists())?
+    child_module_file(&dir, mod_name)?
         .to_str()
         .map(str::to_string)
 }
@@ -437,22 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_rust_crate_module() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("auth.rs"), "pub fn check() {}").unwrap();
-
-        let result = resolve_rust_module(
-            "crate::auth",
-            src.join("main.rs").to_str().unwrap(),
-            src.to_str().unwrap(),
-        );
-        assert!(result.is_some());
-        assert!(result.unwrap().ends_with("auth.rs"));
-    }
-
-    #[test]
     fn test_resolve_rust_mod_decl() {
         let dir = TempDir::new().unwrap();
         let src = dir.path().join("src");
@@ -462,11 +400,5 @@ mod tests {
         let result = resolve_rust_mod_decl("db", src.join("main.rs").to_str().unwrap());
         assert!(result.is_some());
         assert!(result.unwrap().ends_with("db.rs"));
-    }
-
-    #[test]
-    fn test_external_crate_returns_none() {
-        let result = resolve_rust_module("tokio::runtime", "/src/main.rs", "/src");
-        assert!(result.is_none());
     }
 }
