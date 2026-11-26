@@ -134,3 +134,165 @@ fn mod_with_no_file_on_disk_has_no_edge() {
     let edges = imports_of(&fixture, "src/lib.rs");
     assert!(edges.is_empty(), "expected no edges, got {edges:?}");
 }
+
+// Cargo auto-discovered targets are crate roots: their children live beside
+// them, not under a directory named after the file.
+
+#[test]
+fn mod_in_integration_test_resolves_to_sibling_directory_module() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("tests/it.rs", "mod common;\n"),
+        ("tests/common/mod.rs", "pub fn setup() {}\n"),
+    ]);
+
+    assert_single_edge_to(&imports_of(&fixture, "tests/it.rs"), "tests/common/mod.rs");
+}
+
+#[test]
+fn mod_in_integration_test_resolves_to_sibling_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("tests/it.rs", "mod common;\n"),
+        ("tests/common.rs", "pub fn setup() {}\n"),
+    ]);
+
+    assert_single_edge_to(&imports_of(&fixture, "tests/it.rs"), "tests/common.rs");
+}
+
+#[test]
+fn mod_in_bin_target_resolves_to_sibling_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/bin/tool.rs", "mod helper;\n"),
+        ("src/bin/helper.rs", "pub fn help() {}\n"),
+    ]);
+
+    assert_single_edge_to(
+        &imports_of(&fixture, "src/bin/tool.rs"),
+        "src/bin/helper.rs",
+    );
+}
+
+#[test]
+fn mod_in_example_resolves_to_sibling_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("examples/demo.rs", "mod shared;\n"),
+        ("examples/shared.rs", "pub fn show() {}\n"),
+    ]);
+
+    assert_single_edge_to(
+        &imports_of(&fixture, "examples/demo.rs"),
+        "examples/shared.rs",
+    );
+}
+
+#[test]
+fn mod_in_bench_resolves_to_sibling_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("benches/speed.rs", "mod shared;\n"),
+        ("benches/shared.rs", "pub fn measure() {}\n"),
+    ]);
+
+    assert_single_edge_to(
+        &imports_of(&fixture, "benches/speed.rs"),
+        "benches/shared.rs",
+    );
+}
+
+#[test]
+fn mod_in_build_script_resolves_to_sibling_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("build.rs", "mod gen;\n"),
+        ("gen.rs", "pub fn generate() {}\n"),
+    ]);
+
+    // The full path, since a bare `gen.rs` suffix would also match `build/gen.rs`.
+    let expected = fixture.root.join("gen.rs");
+    assert_single_edge_to(
+        &imports_of(&fixture, "build.rs"),
+        expected.to_str().expect("utf-8 path"),
+    );
+}
+
+// A child is looked for in exactly one directory; a same-named file anywhere
+// else never produces an edge.
+
+#[test]
+fn crate_root_child_beside_it_wins_over_stem_directory() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("tests/it.rs", "mod common;\n"),
+        ("tests/common.rs", "pub fn setup() {}\n"),
+        ("tests/it/common.rs", "pub fn other() {}\n"),
+    ]);
+
+    assert_single_edge_to(&imports_of(&fixture, "tests/it.rs"), "tests/common.rs");
+}
+
+#[test]
+fn mod_in_module_file_ignores_sibling_of_the_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod server;\nmod x;\n"),
+        ("src/server.rs", "mod x;\n"),
+        ("src/x.rs", "pub fn x() {}\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "src/server.rs");
+    assert!(edges.is_empty(), "expected no edges, got {edges:?}");
+}
+
+#[test]
+fn mod_in_module_file_stem_directory_wins_over_sibling() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod server;\nmod x;\n"),
+        ("src/server.rs", "mod x;\n"),
+        ("src/server/x.rs", "pub fn inner() {}\n"),
+        ("src/x.rs", "pub fn outer() {}\n"),
+    ]);
+
+    assert_single_edge_to(&imports_of(&fixture, "src/server.rs"), "src/server/x.rs");
+}
+
+#[test]
+fn file_nested_below_tests_is_a_module_file_using_its_stem_directory() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("tests/sub/helper.rs", "mod deep;\n"),
+        ("tests/sub/helper/deep.rs", "pub fn deep() {}\n"),
+    ]);
+
+    assert_single_edge_to(
+        &imports_of(&fixture, "tests/sub/helper.rs"),
+        "tests/sub/helper/deep.rs",
+    );
+}
+
+#[test]
+fn file_nested_below_tests_ignores_sibling_of_the_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("tests/sub/helper.rs", "mod deep;\n"),
+        ("tests/sub/deep.rs", "pub fn deep() {}\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "tests/sub/helper.rs");
+    assert!(edges.is_empty(), "expected no edges, got {edges:?}");
+}
+
+#[test]
+fn missing_child_of_module_file_has_no_edge() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod server;\n"),
+        ("src/server.rs", "mod missing;\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "src/server.rs");
+    assert!(edges.is_empty(), "expected no edges, got {edges:?}");
+}
