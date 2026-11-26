@@ -40,7 +40,6 @@ fn imports_of(fixture: &Fixture, rel: &str) -> Vec<ImportEdge> {
     parse_file(
         &LanguageRegistry::builtin(),
         path.to_str().expect("utf-8 path"),
-        None,
     )
     .expect("rust file parses")
     .imports

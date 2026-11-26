@@ -157,7 +157,7 @@ pub async fn index_single_file(
         }
     }
 
-    let result = parse_file(registry, file_path, None)?;
+    let result = parse_file(registry, file_path)?;
     upsert_file(
         db,
         project,

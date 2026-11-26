@@ -25,7 +25,7 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ParseFileInput>,
     ) -> Result<CallToolResult, McpError> {
-        let result = match parse_file(&self.registry, &input.file_path, None) {
+        let result = match parse_file(&self.registry, &input.file_path) {
             Ok(r) => r,
             Err(e) => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -156,7 +156,7 @@ impl CartographerServer {
                 let mut idx = 0usize;
                 for file_path in &modified {
                     if std::path::Path::new(file_path).exists()
-                        && parse_file(&self.registry, file_path, None).is_ok()
+                        && parse_file(&self.registry, file_path).is_ok()
                     {
                         idx += 1;
                     }
@@ -212,7 +212,7 @@ impl CartographerServer {
                 let mut indexed = 0usize;
                 let mut skipped = 0usize;
                 for file_path in &files {
-                    match parse_file(&self.registry, file_path, None) {
+                    match parse_file(&self.registry, file_path) {
                         Ok(_) => indexed += 1,
                         Err(_) => skipped += 1,
                     }

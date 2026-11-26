@@ -22,7 +22,7 @@ pub struct ParseReport {
 }
 
 pub fn parse_report(registry: &LanguageRegistry, file_path: &str) -> Result<ParseReport, String> {
-    let result = parse_file(registry, file_path, None)?;
+    let result = parse_file(registry, file_path)?;
     Ok(ParseReport {
         file_path: file_path.to_string(),
         language: result.language,

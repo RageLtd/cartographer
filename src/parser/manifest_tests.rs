@@ -79,7 +79,7 @@ fn discovered_grammar_parses_files_end_to_end() {
     let main = project.path().join("main.tiny");
     fs::write(&main, "# Entry\npub fn main() {}\nuse \"./util\";\n").unwrap();
 
-    let result = parse_file(&registry, main.to_str().unwrap(), None).expect("parses");
+    let result = parse_file(&registry, main.to_str().unwrap()).expect("parses");
     assert_eq!(result.language, "tiny");
     assert_eq!(result.symbols.len(), 1);
     assert_eq!(result.symbols[0].name, "main");

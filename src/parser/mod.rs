@@ -26,12 +26,7 @@ use self::ruby::extract_ruby;
 use self::rust_ext::extract_rust;
 use self::ts_js::extract_ts_js;
 
-pub fn parse_file(
-    registry: &LanguageRegistry,
-    file_path: &str,
-    // Unused: the Rust extractor finds each file's crate root itself.
-    _crate_root: Option<&str>,
-) -> Result<FileParseResult, String> {
+pub fn parse_file(registry: &LanguageRegistry, file_path: &str) -> Result<FileParseResult, String> {
     let lang = registry
         .for_path(file_path)
         .ok_or_else(|| match extension_of(file_path) {
