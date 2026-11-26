@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::rust_modules::child_module_dir;
+
 const TS_JS_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs"];
 
 pub fn is_relative_import(specifier: &str) -> bool {
@@ -86,19 +88,14 @@ pub fn resolve_rust_module(module_path: &str, from_file: &str, crate_root: &str)
 }
 
 pub fn resolve_rust_mod_decl(mod_name: &str, from_file: &str) -> Option<String> {
-    let dir = Path::new(from_file).parent()?;
-
+    let dir = child_module_dir(Path::new(from_file))?;
     let as_file = dir.join(format!("{mod_name}.rs"));
-    if as_file.exists() {
-        return as_file.to_str().map(|s| s.to_string());
-    }
-
     let as_mod = dir.join(mod_name).join("mod.rs");
-    if as_mod.exists() {
-        return as_mod.to_str().map(|s| s.to_string());
-    }
-
-    None
+    [as_file, as_mod]
+        .into_iter()
+        .find(|path| path.exists())?
+        .to_str()
+        .map(str::to_string)
 }
 
 /// Resolve a Ruby require or require_relative to a file path.

@@ -9,6 +9,7 @@ pub mod registry;
 pub mod resolver;
 pub mod ruby;
 pub mod rust_ext;
+pub mod rust_modules;
 pub mod ts_js;
 
 use std::fs;
