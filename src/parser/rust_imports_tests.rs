@@ -296,3 +296,119 @@ fn missing_child_of_module_file_has_no_edge() {
     let edges = imports_of(&fixture, "src/server.rs");
     assert!(edges.is_empty(), "expected no edges, got {edges:?}");
 }
+
+// `#[path = "P"]` on a `mod` item names its file outright: `P` is resolved
+// against the declaring file's own directory, whatever kind of file that is.
+
+/// One edge to exactly `fixture.root/rel`, naming `module` as plain `mod`
+/// edges do.
+fn assert_single_path_edge(fixture: &Fixture, edges: &[ImportEdge], rel: &str, module: &str) {
+    let expected = fixture.root.join(rel);
+    assert_single_edge_to(edges, expected.to_str().expect("utf-8 path"));
+    assert_eq!(edges[0].symbols, vec![module.to_string()]);
+}
+
+#[test]
+fn path_attribute_in_module_file_resolves_beside_the_file() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod a;\n"),
+        ("src/a.rs", "#[path = \"a_tests.rs\"]\nmod tests;\n"),
+        ("src/a_tests.rs", "fn t() {}\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "src/a.rs");
+    assert_single_path_edge(&fixture, &edges, "src/a_tests.rs", "tests");
+}
+
+#[test]
+fn path_attribute_resolves_with_other_attributes_around_it() {
+    for source in [
+        "#[cfg(test)]\n#[path = \"a_tests.rs\"]\nmod tests;\n",
+        "#[path = \"a_tests.rs\"]\n#[cfg(test)]\nmod tests;\n",
+    ] {
+        let fixture = write_files(&[
+            CARGO_TOML,
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", source),
+            ("src/a_tests.rs", "fn t() {}\n"),
+        ]);
+
+        let edges = imports_of(&fixture, "src/a.rs");
+        assert_single_path_edge(&fixture, &edges, "src/a_tests.rs", "tests");
+    }
+}
+
+#[test]
+fn path_attribute_with_subdirectory_resolves_from_lib_rs() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        (
+            "src/lib.rs",
+            "#[path = \"support/helpers.rs\"]\nmod helpers;\n",
+        ),
+        ("src/support/helpers.rs", "pub fn help() {}\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "src/lib.rs");
+    assert_single_path_edge(&fixture, &edges, "src/support/helpers.rs", "helpers");
+}
+
+#[test]
+fn path_attribute_climbing_out_of_mod_rs_reports_normalised_target() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod net;\n"),
+        (
+            "src/net/mod.rs",
+            "#[path = \"../shared/util.rs\"]\nmod util;\n",
+        ),
+        ("src/shared/util.rs", "pub fn util() {}\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "src/net/mod.rs");
+    assert_single_path_edge(&fixture, &edges, "src/shared/util.rs", "util");
+    assert!(!edges[0].target.contains(".."), "{}", edges[0].target);
+}
+
+#[test]
+fn path_attribute_to_missing_file_has_no_edge_even_if_name_lookup_would_hit() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod a;\n"),
+        ("src/a.rs", "#[path = \"nope.rs\"]\nmod tests;\n"),
+        ("src/a/tests.rs", "fn t() {}\n"),
+    ]);
+
+    let edges = imports_of(&fixture, "src/a.rs");
+    assert!(edges.is_empty(), "expected no edges, got {edges:?}");
+}
+
+#[test]
+fn path_attribute_applies_only_to_its_own_mod_item() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        (
+            "src/lib.rs",
+            "#[path = \"first_impl.rs\"]\nmod first;\nmod second;\n",
+        ),
+        ("src/first_impl.rs", "pub fn one() {}\n"),
+        ("src/second.rs", "pub fn two() {}\n"),
+    ]);
+
+    let mut edges = imports_of(&fixture, "src/lib.rs");
+    edges.sort_by(|a, b| a.target.cmp(&b.target));
+    let first = fixture.root.join("src/first_impl.rs");
+    let second = fixture.root.join("src/second.rs");
+    let got: Vec<(&str, &[String])> = edges
+        .iter()
+        .map(|e| (e.target.as_str(), e.symbols.as_slice()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (first.to_str().expect("utf-8"), &["first".to_string()][..]),
+            (second.to_str().expect("utf-8"), &["second".to_string()][..]),
+        ]
+    );
+}
