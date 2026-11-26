@@ -75,3 +75,7 @@ pub fn hash_file(file_path: &str) -> Result<String, String> {
         fs::read_to_string(file_path).map_err(|e| format!("Failed to read {file_path}: {e}"))?;
     Ok(hash_content(&content))
 }
+
+#[cfg(test)]
+#[path = "rust_imports_tests.rs"]
+mod rust_imports_tests;
