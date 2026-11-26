@@ -6,7 +6,6 @@
 
 mod graph_tools;
 mod parse_tools;
-mod project_tools;
 
 use std::sync::Arc;
 
@@ -47,7 +46,7 @@ impl CartographerServer {
 
     /// Every tool the server exposes, assembled from the per-concern routers.
     pub fn tool_router() -> ToolRouter<Self> {
-        Self::parse_tools_router() + Self::graph_tools_router() + Self::project_tools_router()
+        Self::parse_tools_router() + Self::graph_tools_router()
     }
 
     /// Get the DB reference, or return an MCP error if in parse-only mode.
@@ -67,3 +66,7 @@ impl CartographerServer {
         tokio::task::block_in_place(|| Handle::current().block_on(fut))
     }
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;

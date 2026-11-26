@@ -44,7 +44,6 @@ Agent query → db/graph.rs (graph walk) → RelevantFile[]
 - **`src/server.rs`** — `CartographerServer` state (`db`, `registry: Arc<LanguageRegistry>`) and the combined `tool_router()`. Tools live in per-concern submodules, each with its own `#[tool_router(router = ..., vis = "pub(crate)")]` block summed with `+`:
   - **`src/server/parse_tools.rs`** — `cartographer_parse_file`, `cartographer_detect_changes`, `cartographer_index_project` (the registry-dependent tools).
   - **`src/server/graph_tools.rs`** — `cartographer_query`, `cartographer_stats` (includes loaded grammars), `cartographer_search`, `cartographer_get_file_info`, `cartographer_find_cycles`.
-  - **`src/server/project_tools.rs`** — `cartographer_rules`, `cartographer_project_path`.
 - **`src/server_types.rs`** — Tool input schema structs (`ParseFileInput`, `QueryInput`, etc.).
 - **`src/handler.rs`** — `ServerHandler` impl for `CartographerServer` (server info, resources).
 - **`src/parser/mod.rs`** — `parse_file(registry, path, crate_root)`: looks the file up in the registry, parses, dispatches on `Extractor` (exhaustive match). `hash_file()`, `hash_content()`.
