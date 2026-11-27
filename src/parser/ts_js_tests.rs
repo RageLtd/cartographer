@@ -267,3 +267,76 @@ export function greet(name: string): string {
     assert!(sym.signature.contains("greet"));
     assert!(!sym.signature.contains("return"));
 }
+
+// Packages of one workspace import each other by package name. That is local
+// code, so each such import is an edge; an installed package still is not.
+#[test]
+fn imports_of_a_workspace_package_by_name_are_edges() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    for (file, contents) in [
+        ("package.json", r#"{ "workspaces": ["packages/*"] }"#),
+        ("packages/app/package.json", r#"{ "name": "app" }"#),
+        (
+            "packages/core/package.json",
+            r#"{ "name": "@scope/core", "exports": {
+                ".": "./src/index.ts", "./util": "./src/util.ts", "./lazy": "./src/lazy.ts"
+            } }"#,
+        ),
+        ("packages/core/src/index.ts", "export const core = 1;"),
+        ("packages/core/src/util.ts", "export const helper = 1;"),
+        ("packages/core/src/lazy.ts", "export const lazy = 1;"),
+    ] {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+    let source = r#"
+import React from "react";
+import { helper } from "@scope/core/util";
+import { hidden } from "@scope/core/src/hidden";
+export * from "@scope/core";
+
+export async function load() {
+    return import("@scope/core/lazy");
+}
+"#;
+    let importer = root.join("packages/app/src/main.ts");
+    let tree = parse_ts(source);
+
+    let (imports, _) = extract_ts_js(
+        importer.to_str().unwrap(),
+        source,
+        tree.root_node(),
+        "typescript",
+    );
+
+    let mut edges: Vec<(String, String, Vec<String>)> = imports
+        .into_iter()
+        .map(|edge| {
+            let target = std::path::Path::new(&edge.target)
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            (edge.specifier, target, edge.symbols)
+        })
+        .collect();
+    edges.sort();
+    let edge = |specifier: &str, target: &str, symbol: &str| {
+        (
+            specifier.to_string(),
+            target.to_string(),
+            vec![symbol.to_string()],
+        )
+    };
+    assert_eq!(
+        edges,
+        vec![
+            edge("@scope/core", "packages/core/src/index.ts", "*"),
+            edge("@scope/core/lazy", "packages/core/src/lazy.ts", "*"),
+            edge("@scope/core/util", "packages/core/src/util.ts", "helper"),
+        ]
+    );
+}

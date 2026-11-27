@@ -26,6 +26,6 @@ Step 2: Show stats (optional)
 ## Notes
 - Indexing is incremental — only changed files are re-parsed (content hash check), and files no longer on disk are removed from the index
 - Supported languages: TypeScript, JavaScript, TSX, JSX, Rust, Ruby, Elixir
-- External/bare imports (npm packages, crates, gems) are tracked but not resolved
+- Imports of installed packages (npm packages, crates, gems) produce no edge. Imports of another package in the same JavaScript or TypeScript workspace, by package name, do
 - The index persists in `~/.cartographer/cartographer.db` across sessions
 - `cartographer_detect_changes` does the same work and lists which files changed

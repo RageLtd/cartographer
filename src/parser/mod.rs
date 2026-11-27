@@ -12,6 +12,7 @@ pub mod rust_ext;
 pub mod rust_modules;
 pub mod rust_use;
 pub mod ts_js;
+pub mod workspace;
 
 use std::fs;
 

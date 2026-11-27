@@ -1,9 +1,33 @@
+use std::cell::OnceCell;
+use std::path::Path;
+
 use tree_sitter::{Node, TreeCursor};
 
 use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::{get_doc_comment, get_signature, strip_quotes};
-use super::resolver::resolve_ts_js_import;
+use super::resolver::{is_relative_import, resolve_ts_js_import};
+use super::workspace::Workspace;
+
+/// Resolves the import specifiers of one file.
+struct Importer<'a> {
+    file_path: &'a str,
+    /// Read from disk the first time a specifier could name a workspace
+    /// package, and at most once for the file.
+    workspace: OnceCell<Option<Workspace>>,
+}
+
+impl Importer<'_> {
+    fn resolve(&self, specifier: &str) -> Option<String> {
+        if is_relative_import(specifier) {
+            return resolve_ts_js_import(specifier, self.file_path);
+        }
+        self.workspace
+            .get_or_init(|| Workspace::containing(Path::new(self.file_path)))
+            .as_ref()?
+            .resolve(specifier)
+    }
+}
 
 pub fn extract_ts_js(
     file_path: &str,
@@ -14,17 +38,21 @@ pub fn extract_ts_js(
     let mut imports = Vec::new();
     let mut symbols = Vec::new();
     let source_bytes = source.as_bytes();
+    let importer = Importer {
+        file_path,
+        workspace: OnceCell::new(),
+    };
 
     let mut cursor = root.walk();
     for node in root.children(&mut cursor) {
         match node.kind() {
             "import_statement" => {
-                if let Some(edge) = extract_ts_js_import(file_path, &node, source_bytes) {
+                if let Some(edge) = extract_ts_js_import(&importer, &node, source_bytes) {
                     imports.push(edge);
                 }
             }
             "export_statement" => {
-                if let Some(re_export) = extract_ts_js_re_export(file_path, &node, source_bytes) {
+                if let Some(re_export) = extract_ts_js_re_export(&importer, &node, source_bytes) {
                     imports.push(re_export);
                 }
                 if is_default_export(&node, source_bytes) {
@@ -64,7 +92,7 @@ pub fn extract_ts_js(
         }
     }
 
-    let dynamic_imports = extract_dynamic_imports(file_path, &root, source_bytes);
+    let dynamic_imports = extract_dynamic_imports(&importer, &root, source_bytes);
     imports.extend(dynamic_imports);
 
     (imports, symbols)
@@ -216,15 +244,19 @@ fn extract_ts_js_decl_symbols(
     symbols
 }
 
-fn extract_ts_js_import(file_path: &str, node: &Node, source_bytes: &[u8]) -> Option<ImportEdge> {
+fn extract_ts_js_import(
+    importer: &Importer,
+    node: &Node,
+    source_bytes: &[u8],
+) -> Option<ImportEdge> {
     let source_node = node.child_by_field_name("source")?;
     let specifier_raw = source_node.utf8_text(source_bytes).ok()?;
     let specifier = strip_quotes(specifier_raw);
-    let resolved = resolve_ts_js_import(specifier, file_path)?;
+    let resolved = importer.resolve(specifier)?;
     let syms = extract_import_symbols(node, source_bytes);
 
     Some(ImportEdge {
-        source: file_path.to_string(),
+        source: importer.file_path.to_string(),
         target: resolved,
         specifier: specifier.to_string(),
         symbols: syms,
@@ -233,17 +265,17 @@ fn extract_ts_js_import(file_path: &str, node: &Node, source_bytes: &[u8]) -> Op
 }
 
 fn extract_ts_js_re_export(
-    file_path: &str,
+    importer: &Importer,
     node: &Node,
     source_bytes: &[u8],
 ) -> Option<ImportEdge> {
     let source_node = node.child_by_field_name("source")?;
     let specifier_raw = source_node.utf8_text(source_bytes).ok()?;
     let specifier = strip_quotes(specifier_raw);
-    let resolved = resolve_ts_js_import(specifier, file_path)?;
+    let resolved = importer.resolve(specifier)?;
 
     Some(ImportEdge {
-        source: file_path.to_string(),
+        source: importer.file_path.to_string(),
         target: resolved,
         specifier: specifier.to_string(),
         symbols: vec!["*".to_string()],
@@ -288,16 +320,20 @@ fn collect_import_symbols_recursive(node: &Node, source_bytes: &[u8], symbols: &
     }
 }
 
-fn extract_dynamic_imports(file_path: &str, root: &Node, source_bytes: &[u8]) -> Vec<ImportEdge> {
+fn extract_dynamic_imports(
+    importer: &Importer,
+    root: &Node,
+    source_bytes: &[u8],
+) -> Vec<ImportEdge> {
     let mut edges = Vec::new();
     let mut cursor = root.walk();
-    visit_dynamic_imports(&mut cursor, file_path, source_bytes, &mut edges);
+    visit_dynamic_imports(&mut cursor, importer, source_bytes, &mut edges);
     edges
 }
 
 fn visit_dynamic_imports(
     cursor: &mut TreeCursor,
-    file_path: &str,
+    importer: &Importer,
     source_bytes: &[u8],
     edges: &mut Vec<ImportEdge>,
 ) {
@@ -310,9 +346,9 @@ fn visit_dynamic_imports(
                         if first_arg.kind() == "string" {
                             if let Ok(text) = first_arg.utf8_text(source_bytes) {
                                 let specifier = strip_quotes(text);
-                                if let Some(resolved) = resolve_ts_js_import(specifier, file_path) {
+                                if let Some(resolved) = importer.resolve(specifier) {
                                     edges.push(ImportEdge {
-                                        source: file_path.to_string(),
+                                        source: importer.file_path.to_string(),
                                         target: resolved,
                                         specifier: specifier.to_string(),
                                         symbols: vec!["*".to_string()],
@@ -328,9 +364,9 @@ fn visit_dynamic_imports(
     }
 
     if cursor.goto_first_child() {
-        visit_dynamic_imports(cursor, file_path, source_bytes, edges);
+        visit_dynamic_imports(cursor, importer, source_bytes, edges);
         while cursor.goto_next_sibling() {
-            visit_dynamic_imports(cursor, file_path, source_bytes, edges);
+            visit_dynamic_imports(cursor, importer, source_bytes, edges);
         }
         cursor.goto_parent();
     }

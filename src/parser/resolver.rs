@@ -21,9 +21,13 @@ pub fn resolve_ts_js_import(specifier: &str, from_file: &str) -> Option<String> 
         return None;
     }
 
-    let dir = Path::new(from_file).parent()?;
-    let candidate = dir.join(specifier);
-    let candidate = normalize_path(&candidate);
+    resolve_ts_js_path(&Path::new(from_file).parent()?.join(specifier))
+}
+
+/// The TypeScript or JavaScript file `path` names, as written, with an
+/// extension added, or as a directory holding an index file.
+pub(super) fn resolve_ts_js_path(path: &Path) -> Option<String> {
+    let candidate = normalize_path(path);
 
     // The compiler looks for the TypeScript source before the file as written,
     // so compiled output sitting beside its source never wins.
@@ -57,7 +61,7 @@ pub fn resolve_ts_js_import(specifier: &str, from_file: &str) -> Option<String> 
     None
 }
 
-fn typescript_source_of(candidate: &Path) -> Option<PathBuf> {
+pub(super) fn typescript_source_of(candidate: &Path) -> Option<PathBuf> {
     let written = candidate.to_str()?;
     TS_SOURCES_OF_JS_EXTENSION
         .iter()
@@ -168,7 +172,7 @@ fn append_ext(path: &Path, ext: &str) -> PathBuf {
 }
 
 /// Normalize a path by resolving `.` and `..` components without requiring the path to exist.
-fn normalize_path(path: &Path) -> PathBuf {
+pub(super) fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
     for component in path.components() {
         match component {

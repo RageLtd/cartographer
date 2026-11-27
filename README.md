@@ -36,6 +36,15 @@ Built in (compiled into the binary, hand-written extractors):
 - Ruby (via `tree-sitter-ruby`)
 - Elixir (via `tree-sitter-elixir`)
 
+Only imports of local code become edges; installed packages, external crates and gems do not.
+
+In a JavaScript or TypeScript monorepo, local code includes the other packages of the workspace. An import such as `@scope/core/util` is followed to the file inside that package when:
+
+- a `package.json` above the importing file has `workspaces`, as a list or as an object with a `packages` list, and one of its patterns names the package's directory. A pattern segment may hold one `*`; `**` and `!` exclusions are not understood, and neither is `pnpm-workspace.yaml`.
+- the package exposes that subpath. With an `exports` map, only the subpaths it lists resolve: exact keys, and patterns with one `*`. Where an entry gives conditions, the first one, in the order written, whose file exists is used. Without `exports`, the bare name resolves through `module`, then `main`, then an index file, and a subpath is a path inside the package.
+
+`tsconfig.json` path aliases are not followed.
+
 ### Host grammars
 
 Any other tree-sitter grammar can be added without rebuilding Cartographer. A grammar is a directory under `~/.cartographer/grammars/<name>/` (set `CARTOGRAPHER_HOME` to move the data dir):
