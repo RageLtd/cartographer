@@ -1,9 +1,10 @@
 //! Indexing a project on disk into a store file, then answering from it.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use crate::db::client::{open, Db};
-use crate::db::graph::{find_cycles, get_file_detail, search_files, walk_import_graph};
+use crate::db::cycles::find_cycles;
+use crate::db::graph::{get_file_detail, search_files, walk_import_graph};
 use crate::db::queries::{get_file_count, get_import_count, get_language_counts};
 use crate::parser::registry::LanguageRegistry;
 use crate::project_fixture_tests::*;
@@ -28,8 +29,8 @@ struct Answers {
     /// The files a search for `formatPath` finds, best first.
     search: Vec<String>,
     server_detail: Option<Detail>,
-    /// Each cycle's members.
-    cycles: Vec<BTreeSet<String>>,
+    /// Each group of files tangled in a cycle.
+    cycles: Vec<Vec<String>>,
     file_count: i64,
     import_count: i64,
     languages: HashMap<String, usize>,
@@ -84,18 +85,11 @@ fn answers(db: &Db, project: &TestProject) -> Answers {
             dependents: relative_edges(project, d.dependents),
         });
 
-    let mut cycles: Vec<BTreeSet<String>> = find_cycles(db, key)
+    let cycles: Vec<Vec<String>> = find_cycles(db, key)
         .unwrap()
         .into_iter()
-        .map(|cycle| {
-            assert_eq!(cycle.first(), cycle.last(), "a cycle ends where it starts");
-            cycle[..cycle.len() - 1]
-                .iter()
-                .map(|path| relative(project, path))
-                .collect()
-        })
+        .map(|group| group.iter().map(|path| relative(project, path)).collect())
         .collect();
-    cycles.sort();
 
     Answers {
         walk,
@@ -135,7 +129,7 @@ fn expected_answers() -> Answers {
             imports: vec![edge(ROUTER, &["route"])],
             dependents: vec![edge(MAIN, &["startServer"]), edge(ROUTER, &["startServer"])],
         }),
-        cycles: vec![BTreeSet::from([ROUTER.to_string(), SERVER.to_string()])],
+        cycles: vec![strings(&[ROUTER, SERVER])],
         file_count: FILE_COUNT as i64,
         import_count: IMPORT_COUNT,
         languages: HashMap::from([("typescript".to_string(), 3), ("javascript".to_string(), 1)]),

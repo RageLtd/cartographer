@@ -2,6 +2,7 @@
 //! directory, shared by the server and hook processes.
 
 pub mod client;
+pub mod cycles;
 pub mod graph;
 pub mod queries;
 mod schema;

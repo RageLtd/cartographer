@@ -7,7 +7,8 @@ use rmcp::model::{CallToolResult, Content};
 use rmcp::{tool, tool_router, ErrorData as McpError};
 
 use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
-use crate::db::graph::{find_cycles, get_file_detail, search_files, walk_import_graph};
+use crate::db::cycles::find_cycles;
+use crate::db::graph::{get_file_detail, search_files, walk_import_graph};
 use crate::db::queries::{get_file_count, get_import_count, get_language_counts};
 use crate::server_types::{FileInfoInput, ProjectInput, QueryInput, SearchInput};
 
@@ -262,33 +263,32 @@ impl CartographerServer {
 
     #[tool(
         name = "cartographer_find_cycles",
-        description = "Detect circular dependencies in the import graph. Returns all dependency cycles found in the project."
+        description = "Find circular dependencies in the import graph. Returns every group of files that depend on one another in a cycle: within a group each file can reach every other by following imports. A file that only leads into a group, or that a group only leads out to, is not listed. Groups are reported rather than individual cycles, since one tangled group can contain millions of distinct cycles."
     )]
     fn find_cycles_tool(
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
-        let cycles =
+        let groups =
             find_cycles(db, &input.project).map_err(|e| McpError::internal_error(e, None))?;
 
-        if cycles.is_empty() {
+        if groups.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No circular dependencies found.",
             )]));
         }
 
         #[derive(serde::Serialize)]
-        struct CycleOut {
-            cycle: Vec<String>,
-            length: usize,
+        struct GroupOut {
+            files: Vec<String>,
+            size: usize,
         }
 
-        let out: Vec<CycleOut> = cycles
+        let out: Vec<GroupOut> = groups
             .into_iter()
-            .map(|c| {
-                let length = c.len() - 1;
-                let cycle: Vec<String> = c
+            .map(|group| {
+                let files: Vec<String> = group
                     .into_iter()
                     .map(|p| {
                         p.strip_prefix(&input.project)
@@ -297,7 +297,10 @@ impl CartographerServer {
                             .to_string()
                     })
                     .collect();
-                CycleOut { cycle, length }
+                GroupOut {
+                    size: files.len(),
+                    files,
+                }
             })
             .collect();
 

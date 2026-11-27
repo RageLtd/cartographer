@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use rusqlite::{params, OptionalExtension};
 
@@ -179,78 +179,6 @@ fn match_expression(query: &str) -> Option<String> {
         .map(|word| format!("\"{word}\""))
         .collect();
     (!terms.is_empty()).then(|| terms.join(" "))
-}
-
-// ============================================================================
-// Cycle detection — DFS-based
-// ============================================================================
-
-pub fn find_cycles(db: &Db, project: &str) -> Result<Vec<Vec<String>>, String> {
-    let edges: Vec<(String, String)> = db.read("Failed to read the import graph", |conn| {
-        // Only dependencies: a Rust `mod child;` and the child's `use super::…`
-        // are not a cycle.
-        conn.prepare(
-            "SELECT source_path, target_path FROM imports
-             WHERE project = ?1 AND is_dependency",
-        )?
-        .query_map([project], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect()
-    })?;
-
-    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
-    for (source_path, target_path) in &edges {
-        graph
-            .entry(source_path.clone())
-            .or_default()
-            .push(target_path.clone());
-    }
-
-    let mut all_cycles: Vec<Vec<String>> = Vec::new();
-    let mut seen_cycles: HashSet<String> = HashSet::new();
-
-    for start in graph.keys() {
-        let mut stack: Vec<(String, Vec<String>)> = vec![(start.clone(), vec![start.clone()])];
-        let mut visited_in_path: HashSet<String> = HashSet::new();
-        visited_in_path.insert(start.clone());
-
-        while let Some((current, path)) = stack.pop() {
-            if let Some(neighbors) = graph.get(&current) {
-                for next in neighbors {
-                    if next == start && path.len() > 1 {
-                        let mut cycle = path.clone();
-                        cycle.push(start.clone());
-
-                        if let Some(min_pos) = cycle
-                            .iter()
-                            .take(cycle.len() - 1)
-                            .enumerate()
-                            .min_by_key(|(_, v)| v.as_str())
-                            .map(|(i, _)| i)
-                        {
-                            let normalized: Vec<String> = cycle[min_pos..cycle.len() - 1]
-                                .iter()
-                                .chain(cycle[..min_pos].iter())
-                                .cloned()
-                                .collect();
-                            let key = normalized.join("|");
-                            if seen_cycles.insert(key) {
-                                let mut final_cycle = normalized;
-                                final_cycle.push(final_cycle[0].clone());
-                                all_cycles.push(final_cycle);
-                            }
-                        }
-                    } else if !visited_in_path.contains(next) && path.len() < 20 {
-                        let mut new_path = path.clone();
-                        new_path.push(next.clone());
-                        visited_in_path.insert(next.clone());
-                        stack.push((next.clone(), new_path));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(all_cycles)
 }
 
 // ============================================================================

@@ -100,7 +100,7 @@ Adding a *built-in* language still means a grammar crate dependency, a `BuiltinL
 | `cartographer_query` | Walk the import graph from entry points, return relevant files |
 | `cartographer_search` | Full-text search across file paths and symbol names |
 | `cartographer_get_file_info` | Detailed file info: symbols, imports, dependents |
-| `cartographer_find_cycles` | Detect circular dependencies in the import graph |
+| `cartographer_find_cycles` | List each group of files that depend on one another in a cycle |
 | `cartographer_parse_file` | Parse a single file's AST and store in DB |
 | `cartographer_detect_changes` | Re-parse new and changed files, remove deleted ones, and list both |
 | `cartographer_stats` | File count, import edges, languages breakdown |
