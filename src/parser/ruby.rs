@@ -65,6 +65,13 @@ fn extract_ruby_recursive(
     imports: &mut Vec<ImportEdge>,
     symbols: &mut Vec<Symbol>,
 ) {
+    // `private` and its siblings apply from where they stand to the end of
+    // the body they are written in.
+    let mut default_visibility = Visibility::Public;
+    // The symbols defined directly in this body: the only ones a later
+    // `private :name` written here can refer to.
+    let mut own_symbols: Vec<usize> = Vec::new();
+
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -114,30 +121,17 @@ fn extract_ruby_recursive(
                     );
                 }
             }
-            "method" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let name = name_node.utf8_text(source_bytes).unwrap_or("");
-                    symbols.push(Symbol {
-                        name: name.to_string(),
-                        kind: SymbolKind::Function,
-                        signature: get_signature(&child, source_bytes),
-                        doc_comment: get_ruby_doc_comment(source, &child),
-                        visibility: Visibility::Public,
-                        line: child.start_position().row + 1,
-                    });
+            "method" | "singleton_method" => {
+                let visibility = ruby_definition_visibility(&child, default_visibility);
+                if let Some(symbol) = ruby_method_symbol(source, &child, source_bytes, visibility) {
+                    own_symbols.push(symbols.len());
+                    symbols.push(symbol);
                 }
             }
-            "singleton_method" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let name = name_node.utf8_text(source_bytes).unwrap_or("");
-                    symbols.push(Symbol {
-                        name: format!("self.{name}"),
-                        kind: SymbolKind::Function,
-                        signature: get_signature(&child, source_bytes),
-                        doc_comment: get_ruby_doc_comment(source, &child),
-                        visibility: Visibility::Public,
-                        line: child.start_position().row + 1,
-                    });
+            "identifier" => {
+                let word = child.utf8_text(source_bytes).unwrap_or("");
+                if let Some(visibility) = ruby_visibility_keyword(word) {
+                    default_visibility = visibility;
                 }
             }
             "assignment" => {
@@ -156,7 +150,70 @@ fn extract_ruby_recursive(
                 }
             }
             "call" => {
-                extract_ruby_call(file_path, source, &child, source_bytes, imports, symbols);
+                let first_new = symbols.len();
+                let method_name = ruby_bare_call_name(&child, source_bytes);
+                let arguments = child.child_by_field_name("arguments");
+                match (ruby_visibility_keyword(method_name), arguments) {
+                    // `private def x`, `private attr_reader :y`, `private :z`
+                    (Some(visibility), Some(args)) => {
+                        let mut arg_cursor = args.walk();
+                        for arg in args.children(&mut arg_cursor) {
+                            match arg.kind() {
+                                "method" | "singleton_method" => {
+                                    let visibility = ruby_definition_visibility(&arg, visibility);
+                                    symbols.extend(ruby_method_symbol(
+                                        source,
+                                        &arg,
+                                        source_bytes,
+                                        visibility,
+                                    ));
+                                }
+                                "call" => extract_ruby_call(
+                                    file_path,
+                                    source,
+                                    &arg,
+                                    source_bytes,
+                                    visibility,
+                                    imports,
+                                    symbols,
+                                ),
+                                _ => {
+                                    if let Some(name) = ruby_name_argument(&arg, source_bytes) {
+                                        set_ruby_visibility(
+                                            symbols,
+                                            &own_symbols,
+                                            name,
+                                            visibility,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (None, Some(args)) if method_name == RUBY_PRIVATE_CLASS_METHOD => {
+                        let mut arg_cursor = args.walk();
+                        for arg in args.children(&mut arg_cursor) {
+                            if let Some(name) = ruby_name_argument(&arg, source_bytes) {
+                                set_ruby_visibility(
+                                    symbols,
+                                    &own_symbols,
+                                    &format!("{RUBY_SINGLETON_PREFIX}{name}"),
+                                    Visibility::Private,
+                                );
+                            }
+                        }
+                    }
+                    _ => extract_ruby_call(
+                        file_path,
+                        source,
+                        &child,
+                        source_bytes,
+                        default_visibility,
+                        imports,
+                        symbols,
+                    ),
+                }
+                own_symbols.extend(first_new..symbols.len());
             }
             _ => {
                 if child.kind() == "body_statement" || child.kind() == "program" {
@@ -174,11 +231,96 @@ fn extract_ruby_recursive(
     }
 }
 
+const RUBY_PRIVATE_CLASS_METHOD: &str = "private_class_method";
+const RUBY_SINGLETON_PREFIX: &str = "self.";
+const RUBY_SINGLETON_METHOD: &str = "singleton_method";
+
+/// The visibility that `public`, `private` or `protected` switches to.
+/// `Visibility` has no protected level; a protected method cannot be called
+/// from outside its class, so it is reported as private.
+fn ruby_visibility_keyword(word: &str) -> Option<Visibility> {
+    match word {
+        "public" => Some(Visibility::Public),
+        "private" | "protected" => Some(Visibility::Private),
+        _ => None,
+    }
+}
+
+/// `private` governs instance methods only; a `def self.x` stays public until
+/// `private_class_method` names it.
+fn ruby_definition_visibility(definition: &Node, current: Visibility) -> Visibility {
+    if definition.kind() == RUBY_SINGLETON_METHOD {
+        Visibility::Public
+    } else {
+        current
+    }
+}
+
+/// The method a call names, or `""` when it is called on a receiver: `x.private`
+/// is not the visibility keyword.
+fn ruby_bare_call_name<'a>(call: &Node, source_bytes: &'a [u8]) -> &'a str {
+    if call.child_by_field_name("receiver").is_some() {
+        return "";
+    }
+    call.child_by_field_name("method")
+        .and_then(|n| n.utf8_text(source_bytes).ok())
+        .unwrap_or("")
+}
+
+fn ruby_method_symbol(
+    source: &str,
+    definition: &Node,
+    source_bytes: &[u8],
+    visibility: Visibility,
+) -> Option<Symbol> {
+    let name = definition
+        .child_by_field_name("name")?
+        .utf8_text(source_bytes)
+        .ok()?;
+    let name = if definition.kind() == RUBY_SINGLETON_METHOD {
+        format!("{RUBY_SINGLETON_PREFIX}{name}")
+    } else {
+        name.to_string()
+    };
+    Some(Symbol {
+        name,
+        kind: SymbolKind::Function,
+        signature: get_signature(definition, source_bytes),
+        doc_comment: get_ruby_doc_comment(source, definition),
+        visibility,
+        line: definition.start_position().row + 1,
+    })
+}
+
+/// A method name given to `private :a, "b"` as a symbol or a string.
+fn ruby_name_argument<'a>(arg: &Node, source_bytes: &'a [u8]) -> Option<&'a str> {
+    let text = arg.utf8_text(source_bytes).ok()?;
+    match arg.kind() {
+        "simple_symbol" => Some(text.trim_start_matches(':')),
+        "string" => Some(strip_quotes(text)),
+        _ => None,
+    }
+}
+
+fn set_ruby_visibility(
+    symbols: &mut [Symbol],
+    own_symbols: &[usize],
+    name: &str,
+    visibility: Visibility,
+) {
+    for &index in own_symbols {
+        if symbols[index].name == name {
+            symbols[index].visibility = visibility;
+        }
+    }
+}
+
 fn extract_ruby_call(
     file_path: &str,
     source: &str,
     node: &Node,
     source_bytes: &[u8],
+    attr_visibility: Visibility,
     imports: &mut Vec<ImportEdge>,
     symbols: &mut Vec<Symbol>,
 ) {
@@ -247,7 +389,7 @@ fn extract_ruby_call(
                                 kind: SymbolKind::Function,
                                 signature: format!("{method_name} :{name}"),
                                 doc_comment: get_ruby_doc_comment(source, node),
-                                visibility: Visibility::Public,
+                                visibility: attr_visibility,
                                 line: node.start_position().row + 1,
                             });
                         }
@@ -260,99 +402,5 @@ fn extract_ruby_call(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse_ruby(source: &str) -> tree_sitter::Tree {
-        let mut parser = tree_sitter::Parser::new();
-        let lang = tree_sitter_ruby::LANGUAGE.into();
-        parser.set_language(&lang).unwrap();
-        parser.parse(source, None).unwrap()
-    }
-
-    #[test]
-    fn test_ruby_class_extraction() {
-        let source = r#"
-# A greeter class
-class Greeter
-  def greet(name)
-    "Hello, #{name}"
-  end
-end
-"#;
-        let tree = parse_ruby(source);
-        let (_, symbols) = extract_ruby("/test.rb", source, tree.root_node());
-
-        assert!(symbols
-            .iter()
-            .any(|s| s.name == "Greeter" && s.kind == SymbolKind::Class));
-        assert!(symbols
-            .iter()
-            .any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
-    }
-
-    #[test]
-    fn test_ruby_module_extraction() {
-        let source = r#"
-module Utils
-  def self.helper
-    true
-  end
-end
-"#;
-        let tree = parse_ruby(source);
-        let (_, symbols) = extract_ruby("/test.rb", source, tree.root_node());
-
-        assert!(symbols
-            .iter()
-            .any(|s| s.name == "Utils" && s.kind == SymbolKind::Module));
-        assert!(symbols
-            .iter()
-            .any(|s| s.name == "self.helper" && s.kind == SymbolKind::Function));
-    }
-
-    #[test]
-    fn test_ruby_constant_extraction() {
-        let source = "MAX_SIZE = 1024\n";
-        let tree = parse_ruby(source);
-        let (_, symbols) = extract_ruby("/test.rb", source, tree.root_node());
-
-        assert!(symbols
-            .iter()
-            .any(|s| s.name == "MAX_SIZE" && s.kind == SymbolKind::Const));
-    }
-
-    #[test]
-    fn test_ruby_require_relative() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let lib = dir.path().join("lib");
-        std::fs::create_dir_all(&lib).unwrap();
-        std::fs::write(lib.join("helper.rb"), "module Helper; end").unwrap();
-        let from_file = lib.join("main.rb").to_str().unwrap().to_string();
-
-        let source = "require_relative 'helper'\n";
-        let tree = parse_ruby(source);
-        let (imports, _) = extract_ruby(&from_file, source, tree.root_node());
-
-        assert_eq!(imports.len(), 1);
-        assert!(imports[0].target.ends_with("helper.rb"));
-    }
-
-    #[test]
-    fn test_ruby_doc_comment() {
-        let source = r#"
-# Calculate the sum of two numbers.
-# Returns an integer.
-def add(a, b)
-  a + b
-end
-"#;
-        let tree = parse_ruby(source);
-        let (_, symbols) = extract_ruby("/test.rb", source, tree.root_node());
-
-        let sym = symbols.iter().find(|s| s.name == "add").unwrap();
-        assert!(sym.doc_comment.is_some());
-        let doc = sym.doc_comment.as_ref().unwrap();
-        assert!(doc.contains("Calculate the sum"));
-    }
-}
+#[path = "ruby_tests.rs"]
+mod tests;
