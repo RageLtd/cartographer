@@ -33,31 +33,32 @@ fn data_survives_closing_and_reopening_the_store_file() {
     );
 }
 
-// The store is a cache of the index: a file from another schema version is
+const OLDER_SCHEMA_VERSION: i64 = 1;
+const NEWER_SCHEMA_VERSION: i64 = 31337;
+
+/// Writes a store file as some other version of Cartographer left it: tables
+/// of another shape, one row each, at schema version `version`.
+fn store_left_by_version(path: &std::path::Path, version: i64) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE files (legacy TEXT NOT NULL);
+         INSERT INTO files VALUES ('left over');
+         CREATE TABLE imports (legacy TEXT NOT NULL);
+         INSERT INTO imports VALUES ('left over');
+         CREATE TABLE git_state (legacy TEXT NOT NULL);
+         INSERT INTO git_state VALUES ('left over');
+         PRAGMA user_version = {version};"
+    ))
+    .unwrap();
+}
+
+// The store is a cache of the index: a file from an older schema version is
 // discarded rather than migrated, and a re-index fills it again.
 #[test]
-fn a_store_file_from_another_schema_version_opens_empty() {
+fn a_store_file_from_an_older_schema_version_opens_empty() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(STORE_FILE);
-    {
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        let mut sql = String::new();
-        for table in [
-            "cart_file",
-            "cart_import",
-            "cart_git_state",
-            "files",
-            "imports",
-            "git_state",
-        ] {
-            sql.push_str(&format!(
-                "CREATE TABLE {table} (legacy TEXT NOT NULL);
-                 INSERT INTO {table} VALUES ('left over');"
-            ));
-        }
-        sql.push_str("PRAGMA user_version = 31337;");
-        conn.execute_batch(&sql).unwrap();
-    }
+    store_left_by_version(&path, OLDER_SCHEMA_VERSION);
 
     let db = open(&path).unwrap();
 
@@ -71,6 +72,34 @@ fn a_store_file_from_another_schema_version_opens_empty() {
         Some("h1".to_string())
     );
     assert_eq!(get_file_count(&db, PROJECT).unwrap(), 1);
+}
+
+// After an update, a hook from the new version and a server still running the
+// old one share the file. If the old one emptied a newer store, each would
+// keep erasing the other's index.
+#[test]
+fn a_store_file_from_a_newer_schema_version_is_refused_and_left_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(STORE_FILE);
+    store_left_by_version(&path, NEWER_SCHEMA_VERSION);
+
+    let refused = open(&path);
+
+    let message = refused.err().expect("a newer store is not opened");
+    assert!(message.contains("newer"), "{message}");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM files WHERE legacy = 'left over'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1);
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, NEWER_SCHEMA_VERSION);
 }
 
 // A hook process opens the store while the server holds it open.

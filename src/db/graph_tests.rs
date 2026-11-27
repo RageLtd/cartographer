@@ -106,6 +106,32 @@ fn walk_honours_max_results() {
     assert_eq!(results[0].reason, "entry");
 }
 
+// The limits arrive from a tool call as signed numbers. A negative one must
+// not turn into a walk of the whole graph.
+#[test]
+fn a_negative_depth_or_result_limit_walks_no_further_than_the_entry() {
+    let (db, _dir) = store();
+    let (a, _b, _c, _d) = chain(&db);
+
+    let negative_depth =
+        walk_import_graph(&db, PROJECT, std::slice::from_ref(&a), Some(-1), Some(50)).unwrap();
+    let negative_results =
+        walk_import_graph(&db, PROJECT, std::slice::from_ref(&a), Some(5), Some(-1)).unwrap();
+
+    assert_eq!(walked(&negative_depth), vec![row(&a, 0, "entry")]);
+    assert_eq!(walked(&negative_results), vec![row(&a, 0, "entry")]);
+}
+
+#[test]
+fn a_negative_search_limit_finds_nothing() {
+    let (db, _dir) = store();
+    search_fixture(&db);
+
+    let found = search_files(&db, PROJECT, "server", -1).unwrap();
+
+    assert_eq!(paths(&found), Vec::<String>::new());
+}
+
 #[test]
 fn walk_from_no_entry_points_is_empty() {
     let (db, _dir) = store();

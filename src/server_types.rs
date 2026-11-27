@@ -21,9 +21,9 @@ pub struct QueryInput {
     pub project: String,
     /// File paths or search terms to start the graph walk from
     pub entry_points: Vec<String>,
-    /// Maximum hops to traverse (default 2)
+    /// Maximum hops to traverse (default 2). Zero or less returns only the entry points.
     pub max_depth: Option<i64>,
-    /// Maximum files to return (default 20)
+    /// Maximum files to return (default 20, at least 1)
     pub max_results: Option<i64>,
 }
 

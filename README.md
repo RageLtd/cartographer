@@ -188,7 +188,7 @@ Graph queries are a breadth-first walk over `imports`, one query per hop in each
 
 Search cuts names into words at punctuation and wherever letters meet digits, so `utf8_decode` is found by `utf`, `8` or `decode`. Every word of a query must match, case is ignored, and results are ranked by BM25.
 
-The file is a cache of what the parser found. A file written under a different schema version is emptied when it is opened, and `/cartographer:index` fills it again.
+The file is a cache of what the parser found. A file written by an older Cartographer whose layout differs is emptied when it is opened, and `/cartographer:index` fills it again. A file written by a newer Cartographer is refused, with a message saying so, and left as it is: after an update the server and the hooks can briefly be different versions sharing the one file.
 
 ### Parse-only mode
 

@@ -57,20 +57,32 @@ pub fn detect_changes(
 /// Compares content hashes, never git: a pull, a checkout or a revert changes
 /// files without leaving anything for `git status` to report.
 ///
-/// A file that cannot be read or parsed is counted and left as it was; a store
-/// failure stops the reconcile.
+/// A file that cannot be read or parsed is counted and left as it was. A store
+/// failure, or a project directory that cannot be read, stops the reconcile
+/// before anything is removed.
 fn reconcile(
     db: &Db,
     registry: &LanguageRegistry,
     project: &str,
     project_root: &str,
 ) -> Result<Reconciled, String> {
+    // A project directory that is missing or unreadable (an unmounted volume,
+    // a rename) would otherwise look like a project whose files are all gone.
+    fs::read_dir(project_root)
+        .map_err(|e| format!("Cannot read the project directory {project_root}: {e}"))?;
+
     let on_disk = walk_project_files(registry, project_root);
     let on_disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
 
     let mut removed = Vec::new();
     for file_path in get_file_paths(db, project)? {
-        if !on_disk_set.contains(file_path.as_str()) {
+        if on_disk_set.contains(file_path.as_str()) {
+            continue;
+        }
+        // Not being walked is not being deleted: the walk skips dot-directories
+        // and directories it cannot read, and `cartographer_parse_file` can
+        // store a file from either. Only a file known to be gone is removed.
+        if matches!(Path::new(&file_path).try_exists(), Ok(false)) {
             remove_file(db, project, &file_path)?;
             removed.push(file_path);
         }
@@ -78,7 +90,6 @@ fn reconcile(
 
     let mut reparsed = Vec::new();
     let mut unchanged = Vec::new();
-    let mut added = false;
     let mut failed = 0;
     for file_path in &on_disk {
         let hash = match hash_file(file_path) {
@@ -111,15 +122,15 @@ fn reconcile(
             &hash,
         )?;
         replace_imports(db, project, file_path, &parsed.imports)?;
-        added |= stored.is_none();
         reparsed.push(file_path.clone());
     }
 
-    // An import resolves against the files that exist, so a file appearing or
-    // disappearing changes the edges of importers whose own content did not
-    // change. Which importers is not recorded (an unresolved import stores no
-    // edge), so all of them are resolved again.
-    if added || !removed.is_empty() {
+    // How a file's imports resolve depends on other files: on which files
+    // exist, and for Rust on which root file declares a module. So a change
+    // anywhere can alter the edges of a file whose own content did not change.
+    // Which files is not recorded (an unresolved import stores no edge), so
+    // all of them are resolved again.
+    if !reparsed.is_empty() || !removed.is_empty() {
         for file_path in &unchanged {
             match parse_file(registry, file_path) {
                 Ok(parsed) => replace_imports(db, project, file_path, &parsed.imports)?,
@@ -148,7 +159,10 @@ pub fn walk_project_files(registry: &LanguageRegistry, dir: &str) -> Vec<String>
 fn walk_recursive(registry: &LanguageRegistry, dir: &Path, files: &mut Vec<String>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            tracing::warn!("Skipping the directory {}: {e}", dir.display());
+            return;
+        }
     };
 
     for entry in entries.flatten() {

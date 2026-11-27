@@ -333,3 +333,133 @@ fn a_file_that_cannot_be_read_does_not_stop_the_rest_being_reconciled() {
         );
     }
 }
+
+// ============================================================================
+// A file is removed only when it is known to be gone
+// ============================================================================
+
+fn try_run(db: &Db, project: &TestProject, kind: Run) -> Result<(), String> {
+    let registry = LanguageRegistry::builtin();
+    match kind {
+        Run::Full => {
+            crate::indexer::full_index(db, &registry, &project.root, &project.root).map(|_| ())
+        }
+        Run::Detect => detect_changes(db, &registry, &project.root, &project.root).map(|_| ()),
+    }
+}
+
+// An unmounted volume or a renamed directory looks, to a walk, like a project
+// with no files in it.
+#[test]
+fn a_project_directory_that_is_not_there_is_an_error_and_removes_nothing() {
+    for kind in RUNS {
+        let (project, db) = indexed(kind);
+        let elsewhere = format!("{}-moved", project.root);
+        fs::rename(&project.root, &elsewhere).unwrap();
+
+        let outcome = try_run(&db, &project, kind);
+
+        fs::rename(&elsewhere, &project.root).unwrap();
+        let message = outcome.expect_err("the project directory is missing");
+        assert!(message.contains(&project.root), "{kind:?}: {message}");
+        assert_eq!(answers(&db, &project), expected_answers(), "{kind:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn files_under_a_directory_that_cannot_be_read_stay_indexed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const LOCKED_DIR: &str = "src/locked";
+    const LOCKED_FILE: &str = "src/locked/inner.ts";
+    for kind in RUNS {
+        let project = test_project();
+        write(&project, LOCKED_FILE, "export function inner() {}\n");
+        let db = open(&project.store_path).unwrap();
+        run(&db, &project, kind);
+        let locked = project.path(LOCKED_DIR);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipping: a directory with no permissions is still readable here (running as root?)");
+            return;
+        }
+
+        let outcome = try_run(&db, &project, kind);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(outcome, Ok(()), "{kind:?}");
+        assert_eq!(
+            detail(&db, &project, LOCKED_FILE).map(|d| d.symbols),
+            Some(strings(&["inner"])),
+            "{kind:?}"
+        );
+    }
+}
+
+// `cartographer_parse_file` can store a file the walk does not visit, such as
+// one in a dot-directory. Not being walked is not the same as being deleted.
+#[test]
+fn a_stored_file_the_walk_skips_is_kept_until_it_is_deleted() {
+    const SKIPPED: &str = ".storybook/main.ts";
+    for kind in RUNS {
+        let (project, db) = indexed(kind);
+        write(&project, SKIPPED, "export const story = 1;\n");
+        crate::db::queries::upsert_file(
+            &db,
+            &project.root,
+            &project.path(SKIPPED),
+            "typescript",
+            &[],
+            "hash",
+        )
+        .unwrap();
+
+        run(&db, &project, kind);
+        assert!(detail(&db, &project, SKIPPED).is_some(), "{kind:?}");
+
+        fs::remove_file(project.path(SKIPPED)).unwrap();
+        run(&db, &project, kind);
+        assert_eq!(detail(&db, &project, SKIPPED), None, "{kind:?}");
+    }
+}
+
+// ============================================================================
+// A change in one file that alters how another file's imports resolve
+// ============================================================================
+
+// Which crate root `src/a.rs` belongs to is decided by which of `lib.rs` and
+// `main.rs` declares `mod a;`. With neither declaring it, `crate::top` in
+// `a.rs` names an item in an unknown file; once `lib.rs` declares it, the
+// item is in `lib.rs`, though `a.rs` itself has not changed.
+#[test]
+fn an_unchanged_file_gains_its_edge_when_another_files_change_lets_its_import_resolve() {
+    const LIB_WITHOUT_THE_MODULE: &str = "pub fn top() {}\n";
+    const LIB_DECLARING_THE_MODULE: &str = "mod a;\n\npub fn top() {}\n";
+    for kind in RUNS {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonical, because the Rust resolver reports canonical paths and
+        // the temporary directory is a symlink on macOS.
+        let root = dir.path().canonicalize().unwrap().join("crate");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        fs::write(root.join("src/lib.rs"), LIB_WITHOUT_THE_MODULE).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("src/a.rs"), "use crate::top;\n").unwrap();
+        let project = TestProject::at(root.to_str().unwrap(), dir);
+        let db = open(&project.store_path).unwrap();
+
+        run(&db, &project, kind);
+        assert_eq!(imports_of(&db, &project, "src/a.rs"), vec![], "{kind:?}");
+
+        fs::write(project.path("src/lib.rs"), LIB_DECLARING_THE_MODULE).unwrap();
+        run(&db, &project, kind);
+
+        assert_eq!(
+            imports_of(&db, &project, "src/a.rs"),
+            vec![edge("src/lib.rs", &["top"])],
+            "{kind:?}"
+        );
+    }
+}

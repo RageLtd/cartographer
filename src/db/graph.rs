@@ -22,8 +22,10 @@ pub fn walk_import_graph(
         return Ok(vec![]);
     }
 
-    let max_depth = max_depth.unwrap_or(DEFAULT_MAX_DEPTH) as usize;
-    let max_results = max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
+    // The limits arrive from a tool call as signed numbers. Cast as it is, a
+    // negative one would become enormous and unbound the walk.
+    let max_depth = max_depth.unwrap_or(DEFAULT_MAX_DEPTH).max(0) as usize;
+    let max_results = max_results.unwrap_or(DEFAULT_MAX_RESULTS).max(1) as usize;
 
     let mut visited: HashMap<String, (usize, String)> = HashMap::new();
     let mut queue: VecDeque<(String, usize, String)> = VecDeque::new();
@@ -156,7 +158,8 @@ pub fn search_files(
              ORDER BY bm25(file_search)
              LIMIT ?3",
             )?
-            .query_map(params![expression, project, limit], |row| {
+            // To SQLite a negative LIMIT means no limit.
+            .query_map(params![expression, project, limit.max(0)], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })?
             .collect()

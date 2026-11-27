@@ -1,5 +1,11 @@
 //! Tools that keep the stored index in line with a project's files. They need
 //! the index, so a parse-only server does not list them.
+//!
+//! Each reads and parses a whole project, which can take seconds, and a tool
+//! handler runs on a runtime worker thread. So the work runs under
+//! `block_in_place`, which lets the runtime move that worker's other tasks to
+//! another thread meanwhile. It requires the multi-thread runtime, which is
+//! the one `main` starts.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
@@ -21,8 +27,10 @@ impl CartographerServer {
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
-        let changes = indexer::detect_changes(db, &self.registry, &input.project, &input.project)
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let changes = tokio::task::block_in_place(|| {
+            indexer::detect_changes(db, &self.registry, &input.project, &input.project)
+        })
+        .map_err(|e| McpError::internal_error(e, None))?;
 
         if changes.reparsed.is_empty() && changes.removed.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -58,8 +66,10 @@ impl CartographerServer {
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
-        let (indexed, skipped) = full_index(db, &self.registry, &input.project, &input.project)
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let (indexed, skipped) = tokio::task::block_in_place(|| {
+            full_index(db, &self.registry, &input.project, &input.project)
+        })
+        .map_err(|e| McpError::internal_error(e, None))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Indexed {indexed} files ({skipped} skipped)."

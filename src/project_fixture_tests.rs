@@ -78,6 +78,15 @@ pub fn test_project() -> TestProject {
 }
 
 impl TestProject {
+    /// A project a test has written for itself at `root`, inside `dir`.
+    pub fn at(root: &str, dir: TempDir) -> Self {
+        Self {
+            root: root.to_string(),
+            store_path: dir.path().join("store").join("cartographer.db"),
+            _dir: dir,
+        }
+    }
+
     /// The absolute path of `file`, as the indexer stores it.
     pub fn path(&self, file: &str) -> String {
         format!("{}/{file}", self.root)

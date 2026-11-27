@@ -1,9 +1,12 @@
+use std::cmp::Ordering;
+
 use rusqlite::{Connection, TransactionBehavior};
 
 /// Bump whenever `SCHEMA` or what is stored in it changes, such as how
 /// `search_words` cuts the search text. The store is a cache of the index, so
-/// a file written under another version is emptied and refilled by the next
-/// index rather than migrated.
+/// a file written under an older version is emptied and refilled by the next
+/// index rather than migrated. A file written under a newer version is
+/// refused: see `is_current`.
 const SCHEMA_VERSION: i64 = 4;
 
 const USER_VERSION: &str = "user_version";
@@ -42,12 +45,12 @@ const SCHEMA: &str = "
     CREATE VIRTUAL TABLE file_search USING fts5(searchable, tokenize = 'unicode61');
 ";
 
-/// Brings the store to `SCHEMA_VERSION`, discarding whatever an older or newer
-/// version left in it.
+/// Brings the store to `SCHEMA_VERSION`, discarding whatever an older version
+/// left in it. Fails, changing nothing, on a store from a newer version.
 pub fn init_schema(conn: &mut Connection) -> Result<(), String> {
     let failed = |e: rusqlite::Error| format!("Failed to initialize the Cartographer schema: {e}");
 
-    if user_version(conn).map_err(failed)? == SCHEMA_VERSION {
+    if is_current(user_version(conn).map_err(failed)?)? {
         return Ok(());
     }
 
@@ -56,7 +59,7 @@ pub fn init_schema(conn: &mut Connection) -> Result<(), String> {
         .map_err(failed)?;
     // Another process may have initialized the store while this one waited
     // for the write lock.
-    if user_version(&tx).map_err(failed)? != SCHEMA_VERSION {
+    if !is_current(user_version(&tx).map_err(failed)?)? {
         drop_all_tables(&tx).map_err(failed)?;
         tx.execute_batch(SCHEMA).map_err(failed)?;
         tx.pragma_update(None, USER_VERSION, SCHEMA_VERSION)
@@ -64,6 +67,25 @@ pub fn init_schema(conn: &mut Connection) -> Result<(), String> {
         tracing::info!("Cartographer schema initialized (version {SCHEMA_VERSION})");
     }
     tx.commit().map_err(failed)
+}
+
+/// Whether a store at `version` can be used as it is. `false` means it is
+/// older and is to be rebuilt.
+///
+/// A newer store is an error and is left alone. The server and the hooks are
+/// separate processes sharing the file, and after an update the two can be
+/// different versions for a while. If each emptied whatever it did not
+/// recognise, they would keep erasing each other's index.
+fn is_current(version: i64) -> Result<bool, String> {
+    match version.cmp(&SCHEMA_VERSION) {
+        Ordering::Equal => Ok(true),
+        Ordering::Less => Ok(false),
+        Ordering::Greater => Err(format!(
+            "The store was written by a newer Cartographer (schema version {version}; this \
+             one reads up to {SCHEMA_VERSION}). Update Cartographer, or delete the store file \
+             to rebuild it."
+        )),
+    }
 }
 
 fn user_version(conn: &Connection) -> rusqlite::Result<i64> {
