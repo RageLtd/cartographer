@@ -158,7 +158,7 @@ cartographer hook:post-compact # PostCompact hook
 A minimal import map in one SQLite file — no embeddings, no vectors. The file is `~/.cartographer/cartographer.db`, or `$CARTOGRAPHER_HOME/cartographer.db` when that variable is set. Cartographer creates it on first use; nothing else has to be installed or running. The MCP server and the hooks all read the same file.
 
 - **files**: `(project, file_path, language, symbols, content_hash, last_parsed_epoch)` — `symbols` is a JSON string of `Symbol[]`
-- **imports**: `(project, source_path, target_path, specifier, symbols, updated_at_epoch)` — one row per source, target and specifier. Imports that share all three are stored as one edge carrying the symbols of each.
+- **imports**: `(project, source_path, target_path, specifier, symbols, is_dependency, updated_at_epoch)` — one row per source, target and specifier. Imports that share all three are stored as one edge carrying the symbols of each. `is_dependency` is false for a Rust `mod x;` declaration, which says where a child module lives without using it; such an edge still counts for dependents and the graph walk, but not for cycles.
 - **file_search**: a full-text (FTS5) table over each file's path and symbol names
 
 Graph queries are a breadth-first walk over `imports`, one query per hop in each direction, bounded by depth and result count.

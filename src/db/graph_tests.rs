@@ -374,6 +374,81 @@ fn a_three_file_cycle_is_reported_once() {
     assert_eq!(cycle_members(&cycles[0]), HashSet::from([a, b, c]));
 }
 
+// A Rust parent must declare `mod child;` for the child to exist. That says
+// where the child lives, not that the parent depends on it.
+#[test]
+fn a_module_declaration_and_the_childs_use_of_its_parent_are_not_a_cycle() {
+    let (db, _dir) = store();
+    let (parent, child) = (p("src/parser/mod.rs"), p("src/parser/tests.rs"));
+    add_file(&db, PROJECT, &parent, &["parse_file"]);
+    add_file(&db, PROJECT, &child, &[]);
+    replace_imports(
+        &db,
+        PROJECT,
+        &parent,
+        &[module_edge(&parent, &child, "tests")],
+    )
+    .unwrap();
+    replace_imports(
+        &db,
+        PROJECT,
+        &child,
+        &[edge(&child, &parent, "super::parse_file", &["parse_file"])],
+    )
+    .unwrap();
+
+    let cycles = find_cycles(&db, PROJECT).unwrap();
+
+    assert!(cycles.is_empty(), "{cycles:?}");
+    // The declaration is still an edge everywhere else: removing or renaming
+    // the child breaks the parent.
+    let detail = get_file_detail(&db, PROJECT, &child).unwrap().unwrap();
+    assert_eq!(
+        detail.dependents,
+        vec![(parent.clone(), strings(&["tests"]))]
+    );
+    let walk = walk_import_graph(
+        &db,
+        PROJECT,
+        std::slice::from_ref(&parent),
+        Some(1),
+        Some(50),
+    )
+    .unwrap();
+    assert_eq!(
+        walked(&walk),
+        vec![row(&parent, 0, "entry"), row(&child, 1, "dependency")]
+    );
+}
+
+#[test]
+fn a_parent_that_uses_its_child_which_uses_it_back_is_a_cycle() {
+    let (db, _dir) = store();
+    let (parent, child) = (p("src/parser/mod.rs"), p("src/parser/registry.rs"));
+    replace_imports(
+        &db,
+        PROJECT,
+        &parent,
+        &[
+            module_edge(&parent, &child, "registry"),
+            edge(&parent, &child, "self::registry::Registry", &["Registry"]),
+        ],
+    )
+    .unwrap();
+    replace_imports(
+        &db,
+        PROJECT,
+        &child,
+        &[edge(&child, &parent, "super::parse_file", &["parse_file"])],
+    )
+    .unwrap();
+
+    let cycles = find_cycles(&db, PROJECT).unwrap();
+
+    assert_eq!(cycles.len(), 1, "{cycles:?}");
+    assert_eq!(cycle_members(&cycles[0]), HashSet::from([parent, child]));
+}
+
 #[test]
 fn an_acyclic_graph_reports_no_cycles() {
     let (db, _dir) = store();

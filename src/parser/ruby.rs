@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
+use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::{get_signature, strip_quotes};
 use super::resolver::resolve_ruby_require;
@@ -349,6 +349,7 @@ fn extract_ruby_call(
                                     target,
                                     specifier: specifier.to_string(),
                                     symbols: vec!["*".to_string()],
+                                    kind: EdgeKind::Import,
                                 });
                             }
                         }

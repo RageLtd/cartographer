@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
+use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::{get_doc_comment, get_signature, strip_quotes};
 use super::resolver::{resolve_rust_mod_decl, resolve_rust_path_attr};
@@ -129,6 +129,7 @@ fn extract_rust_mod(file_path: &str, node: &Node, source_bytes: &[u8]) -> Option
         target: resolved,
         specifier: format!("mod {mod_name}"),
         symbols: vec![mod_name.to_string()],
+        kind: EdgeKind::ModuleDeclaration,
     })
 }
 

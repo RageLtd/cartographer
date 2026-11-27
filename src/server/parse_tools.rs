@@ -63,6 +63,7 @@ impl CartographerServer {
             target: String,
             specifier: String,
             symbols: Vec<String>,
+            kind: crate::types::EdgeKind,
         }
 
         #[derive(serde::Serialize)]
@@ -84,6 +85,7 @@ impl CartographerServer {
                     target: i.target,
                     specifier: i.specifier,
                     symbols: i.symbols,
+                    kind: i.kind,
                 })
                 .collect(),
             symbols: result.symbols,

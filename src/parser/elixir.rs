@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
+use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::get_signature;
 use super::resolver::resolve_elixir_module;
@@ -228,6 +228,7 @@ fn extract_elixir_call(
                         target,
                         specifier: name,
                         symbols: vec!["*".to_string()],
+                        kind: EdgeKind::Import,
                     });
                 }
             }

@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use crate::db::client::{open, Db};
 use crate::db::graph::{find_cycles, get_file_detail, search_files, walk_import_graph};
 use crate::db::queries::{get_file_count, get_import_count, get_language_counts};
+use crate::parser::registry::LanguageRegistry;
 use crate::project_fixture_tests::*;
 
 /// An edge as (path relative to the root, sorted symbols).
@@ -173,6 +174,44 @@ fn the_index_survives_closing_and_reopening_the_store_file() {
     let db = open(&project.store_path).unwrap();
 
     assert_eq!(answers(&db, &project), expected_answers());
+}
+
+// The parent declares `mod util;` and the child uses `super::top`: one crate,
+// two files, and no dependency cycle between them.
+#[test]
+fn a_rust_module_using_its_parent_is_indexed_without_a_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    // Canonical, because the Rust resolver reports canonical paths and the
+    // temporary directory is a symlink on macOS.
+    let root = dir.path().canonicalize().unwrap().join("crate");
+    let (lib, util) = (root.join("src/lib.rs"), root.join("src/util.rs"));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    std::fs::write(&lib, "mod util;\n\npub fn top() {}\n").unwrap();
+    std::fs::write(
+        &util,
+        "use super::top;\n\npub fn helper() {\n    top();\n}\n",
+    )
+    .unwrap();
+    let (key, lib, util) = (
+        root.to_str().unwrap(),
+        lib.to_str().unwrap(),
+        util.to_str().unwrap(),
+    );
+    let db = open(&dir.path().join("cartographer.db")).unwrap();
+
+    crate::indexer::full_index(&db, &LanguageRegistry::builtin(), key, key).unwrap();
+
+    assert_eq!(find_cycles(&db, key).unwrap(), Vec::<Vec<String>>::new());
+    let child = get_file_detail(&db, key, util).unwrap().unwrap();
+    assert_eq!(
+        child.imports,
+        vec![(lib.to_string(), vec!["top".to_string()])]
+    );
+    assert_eq!(
+        child.dependents,
+        vec![(lib.to_string(), vec!["util".to_string()])]
+    );
 }
 
 #[path = "indexer_reconcile_tests.rs"]

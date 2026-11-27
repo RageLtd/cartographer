@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 use super::parse_file;
 use super::registry::LanguageRegistry;
-use crate::types::ImportEdge;
+use crate::types::{EdgeKind, ImportEdge};
 
 const CARGO_TOML: (&str, &str) = ("Cargo.toml", "[package]\nname = \"x\"\n");
 
@@ -63,6 +63,29 @@ fn mod_in_lib_rs_resolves_to_sibling_file() {
     ]);
 
     assert_single_edge_to(&imports_of(&fixture, "src/lib.rs"), "src/util.rs");
+}
+
+#[test]
+fn a_mod_declaration_is_marked_as_one_and_a_use_as_an_import() {
+    let fixture = write_files(&[
+        CARGO_TOML,
+        ("src/lib.rs", "mod util;\nuse crate::util::helper;\n"),
+        ("src/util.rs", "pub fn helper() {}\n"),
+    ]);
+
+    let mut kinds: Vec<(String, EdgeKind)> = imports_of(&fixture, "src/lib.rs")
+        .into_iter()
+        .map(|edge| (edge.specifier, edge.kind))
+        .collect();
+    kinds.sort_by(|a, b| a.0.cmp(&b.0));
+
+    assert_eq!(
+        kinds,
+        vec![
+            ("crate::util::helper".to_string(), EdgeKind::Import),
+            ("mod util".to_string(), EdgeKind::ModuleDeclaration),
+        ]
+    );
 }
 
 #[test]

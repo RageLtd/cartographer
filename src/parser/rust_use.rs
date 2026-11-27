@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use tree_sitter::Node;
 
-use crate::types::ImportEdge;
+use crate::types::{EdgeKind, ImportEdge};
 
 use super::rust_modules::{
     child_module_file, crate_root_module, module_of_file, parent_module, RootFileModules,
@@ -61,6 +61,7 @@ pub fn use_edges(
                 target: target.to_str()?.to_string(),
                 specifier: specifier.to_string(),
                 symbols,
+                kind: EdgeKind::Import,
             })
         })
         .collect()

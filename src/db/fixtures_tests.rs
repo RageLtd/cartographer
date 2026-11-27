@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use super::client::{open, Db};
 use super::queries::upsert_file;
-use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
+use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 pub const PROJECT: &str = "/repo";
 pub const OTHER_PROJECT: &str = "/other";
@@ -48,6 +48,15 @@ pub fn edge(source: &str, target: &str, specifier: &str, symbols: &[&str]) -> Im
         target: target.to_string(),
         specifier: specifier.to_string(),
         symbols: strings(symbols),
+        kind: EdgeKind::Import,
+    }
+}
+
+/// The edge a Rust `mod <name>;` in `parent` makes to the file of `child`.
+pub fn module_edge(parent: &str, child: &str, name: &str) -> ImportEdge {
+    ImportEdge {
+        kind: EdgeKind::ModuleDeclaration,
+        ..edge(parent, child, &format!("mod {name}"), &[name])
     }
 }
 

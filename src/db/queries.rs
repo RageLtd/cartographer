@@ -125,8 +125,9 @@ pub fn replace_imports(
             )?;
             let mut insert = tx.prepare(
                 "INSERT INTO imports
-                    (project, source_path, target_path, specifier, symbols, updated_at_epoch)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (project, source_path, target_path, specifier, symbols, is_dependency,
+                     updated_at_epoch)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for edge in &edges {
                 let symbols_json = sonic_rs::to_string(&edge.symbols)
@@ -137,6 +138,7 @@ pub fn replace_imports(
                     edge.target,
                     edge.specifier,
                     symbols_json,
+                    edge.kind.is_dependency(),
                     now
                 ])?;
             }

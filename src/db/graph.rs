@@ -187,9 +187,14 @@ fn match_expression(query: &str) -> Option<String> {
 
 pub fn find_cycles(db: &Db, project: &str) -> Result<Vec<Vec<String>>, String> {
     let edges: Vec<(String, String)> = db.read("Failed to read the import graph", |conn| {
-        conn.prepare("SELECT source_path, target_path FROM imports WHERE project = ?1")?
-            .query_map([project], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
+        // Only dependencies: a Rust `mod child;` and the child's `use super::…`
+        // are not a cycle.
+        conn.prepare(
+            "SELECT source_path, target_path FROM imports
+             WHERE project = ?1 AND is_dependency",
+        )?
+        .query_map([project], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
     })?;
 
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();

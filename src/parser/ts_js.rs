@@ -1,6 +1,6 @@
 use tree_sitter::{Node, TreeCursor};
 
-use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
+use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::{get_doc_comment, get_signature, strip_quotes};
 use super::resolver::resolve_ts_js_import;
@@ -228,6 +228,7 @@ fn extract_ts_js_import(file_path: &str, node: &Node, source_bytes: &[u8]) -> Op
         target: resolved,
         specifier: specifier.to_string(),
         symbols: syms,
+        kind: EdgeKind::Import,
     })
 }
 
@@ -246,6 +247,7 @@ fn extract_ts_js_re_export(
         target: resolved,
         specifier: specifier.to_string(),
         symbols: vec!["*".to_string()],
+        kind: EdgeKind::Import,
     })
 }
 
@@ -314,6 +316,7 @@ fn visit_dynamic_imports(
                                         target: resolved,
                                         specifier: specifier.to_string(),
                                         symbols: vec!["*".to_string()],
+                                        kind: EdgeKind::Import,
                                     });
                                 }
                             }

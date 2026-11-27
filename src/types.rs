@@ -7,6 +7,29 @@ pub struct ImportEdge {
     pub target: String,
     pub specifier: String,
     pub symbols: Vec<String>,
+    pub kind: EdgeKind,
+}
+
+/// What an edge from one file to another says about them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeKind {
+    /// The source uses something the target defines.
+    Import,
+    /// The source says where the target lives without using it: Rust's
+    /// `mod x;`, which a parent must write for its child module to exist.
+    ModuleDeclaration,
+}
+
+impl EdgeKind {
+    /// Whether the source depends on the target's code. A cycle of edges that
+    /// are not dependencies is not a dependency cycle.
+    pub fn is_dependency(self) -> bool {
+        match self {
+            EdgeKind::Import => true,
+            EdgeKind::ModuleDeclaration => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -16,7 +16,7 @@ use std::fmt;
 use regex::Regex;
 use tree_sitter::{Language, Node, Query, QueryCursor, QueryPredicateArg, StreamingIterator};
 
-use crate::types::{ImportEdge, Symbol, SymbolKind, Visibility};
+use crate::types::{EdgeKind, ImportEdge, Symbol, SymbolKind, Visibility};
 
 use super::extractor::{get_signature, strip_quotes};
 use super::resolver::{resolve_with_strategies, ResolverStrategy};
@@ -327,6 +327,7 @@ fn extract_imports(
                 target: resolved.path,
                 specifier,
                 symbols,
+                kind: EdgeKind::Import,
             },
         ));
     }
