@@ -1,3 +1,8 @@
+---
+name: query-graph
+description: Walk Cartographer's import graph from one or more files to find what they depend on and what depends on them. Use for dependency and structure questions before reaching for Grep or Glob, and when planning to move or rename files.
+---
+
 # Query Import Graph
 
 Walk the import graph from entry point files to find dependencies and dependents.

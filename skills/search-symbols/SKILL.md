@@ -1,3 +1,8 @@
+---
+name: search-symbols
+description: Search Cartographer's index for files by path or by the names of the symbols they define. Use to find where a function, type or class is defined, or to locate a file from part of its path.
+---
+
 # Search Files and Symbols
 
 Full-text search across indexed file paths and symbol names.

@@ -1,3 +1,8 @@
+---
+name: index-project
+description: Index a codebase with Cartographer to build its import graph. Use at the start of work in a project that is not indexed yet, or when a Cartographer query comes back empty.
+---
+
 # Index Project
 
 Index the current codebase to build its import graph.

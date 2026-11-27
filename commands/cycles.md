@@ -1,5 +1,4 @@
 ---
-name: carto:cycles
 description: Find circular dependencies in the import graph
 ---
 

@@ -1,5 +1,4 @@
 ---
-name: carto:search
 description: Search indexed files by path or symbol name
 arguments:
   - name: query
@@ -13,4 +12,4 @@ Search the Cartographer index for files matching the query.
 2. Present results as a list showing:
    - File path (relative to project root)
    - Key symbols defined in each file (name, kind, visibility)
-3. If no results found, suggest the user run `/carto:index` first
+3. If no results found, suggest the user run `/cartographer:index` first

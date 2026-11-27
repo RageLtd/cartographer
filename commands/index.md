@@ -1,5 +1,4 @@
 ---
-name: carto:index
 description: Index the current project to build its import graph
 ---
 

@@ -1,3 +1,8 @@
+---
+name: blast-radius
+description: Assess what would be affected by changing a file, using Cartographer's import graph. Use before changing a widely imported file, when planning a refactor, or when asked "what would break if I change this?".
+---
+
 # Blast Radius Analysis
 
 Assess the impact of changing a file by combining dependency analysis with file detail.

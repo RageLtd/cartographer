@@ -1,5 +1,4 @@
 ---
-name: carto:deps
 description: Show what a file depends on (its imports)
 arguments:
   - name: file

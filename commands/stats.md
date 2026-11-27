@@ -1,5 +1,4 @@
 ---
-name: carto:stats
 description: Show index statistics for the current project
 ---
 
@@ -10,4 +9,4 @@ Show Cartographer index statistics for this project.
    - Total files indexed
    - Total import edges
    - Language breakdown (file counts per language)
-3. If no files are indexed, suggest running `/carto:index`
+3. If no files are indexed, suggest running `/cartographer:index`

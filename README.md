@@ -25,7 +25,17 @@ Add the marketplace and install:
 /plugin install cartographer@rageltd
 ```
 
-The plugin automatically downloads the binary on first session start.
+That is all there is to install. Nothing else has to be installed or running: there is no database server, and the index is a file Cartographer creates for itself.
+
+What the plugin sets up:
+
+- **The MCP server.** The plugin's manifest (`.claude-plugin/plugin.json`) registers it, so the `cartographer_*` tools appear in every session with nothing added by hand.
+- **The binary.** On the first session the plugin downloads the build for your machine from the latest [GitHub release](https://github.com/RageLtd/cartographer/releases) into `~/.cartographer/bin`, and checks for a newer one at the start of each later session. This needs `curl` and a connection to GitHub. If a download fails, the binary already installed is kept and the failure is reported.
+- **Hooks, slash commands and skills**, listed below.
+
+Then index a project once, with `/cartographer:index`.
+
+Supported: macOS on Apple silicon and Intel, and Linux on x64. On Windows the binary is downloaded but the MCP server is not started, because the command that starts it is a shell script; the tools are not available there yet.
 
 ## Languages
 
@@ -126,13 +136,13 @@ Adding a *built-in* language still means a grammar crate dependency, a `BuiltinL
 
 | Command | Purpose |
 |---------|---------|
-| `/carto:index` | Index the current project |
-| `/carto:deps <file>` | Show what a file depends on |
-| `/carto:impact <file>` | Blast radius analysis — what breaks if you change a file |
-| `/carto:search <query>` | Search files and symbols |
-| `/carto:cycles` | Find circular dependencies |
-| `/carto:stats` | Show index statistics |
-| `/carto:info <file>` | Detailed file info (symbols, imports, dependents) |
+| `/cartographer:index` | Index the current project |
+| `/cartographer:deps <file>` | Show what a file depends on |
+| `/cartographer:impact <file>` | Blast radius analysis — what breaks if you change a file |
+| `/cartographer:search <query>` | Search files and symbols |
+| `/cartographer:cycles` | Find circular dependencies |
+| `/cartographer:stats` | Show index statistics |
+| `/cartographer:info <file>` | Detailed file info (symbols, imports, dependents) |
 
 ## Hooks
 
@@ -178,7 +188,7 @@ Graph queries are a breadth-first walk over `imports`, one query per hop in each
 
 Search cuts names into words at punctuation and wherever letters meet digits, so `utf8_decode` is found by `utf`, `8` or `decode`. Every word of a query must match, case is ignored, and results are ranked by BM25.
 
-The file is a cache of what the parser found. A file written under a different schema version is emptied when it is opened, and `/carto:index` fills it again.
+The file is a cache of what the parser found. A file written under a different schema version is emptied when it is opened, and `/cartographer:index` fills it again.
 
 ### Parse-only mode
 

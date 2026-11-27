@@ -1,5 +1,4 @@
 ---
-name: carto:info
 description: Get detailed information about a specific file
 arguments:
   - name: file

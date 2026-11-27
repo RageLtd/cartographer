@@ -1,3 +1,8 @@
+---
+name: file-detail
+description: Get one file's symbols, what it imports and what imports it, from Cartographer's index. Use to see a file's API surface or its direct connections before modifying it.
+---
+
 # File Detail
 
 Get comprehensive information about a specific file: its symbols, what it imports, and what imports it.

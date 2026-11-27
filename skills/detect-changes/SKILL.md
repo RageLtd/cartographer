@@ -1,3 +1,8 @@
+---
+name: detect-changes
+description: Bring Cartographer's index in line with the files on disk and list what changed. Use after editing, creating, renaming or deleting source files, after a pull or checkout, or when the index may be stale.
+---
+
 # Detect Changes
 
 Bring the import graph in line with the files on disk, and see what changed.

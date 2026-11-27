@@ -1,5 +1,4 @@
 ---
-name: carto:impact
 description: Analyze the blast radius of changing a file
 arguments:
   - name: file

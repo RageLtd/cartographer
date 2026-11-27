@@ -1,3 +1,8 @@
+---
+name: find-uses
+description: Find every place a symbol is used across the project, by file and line, with Cartographer. Use before renaming, changing or removing an exported function, constant, class or type, or when asked where something is used. TypeScript and JavaScript only.
+---
+
 # Find Uses of a Symbol
 
 Find every place a symbol is used across the project, by file and line.

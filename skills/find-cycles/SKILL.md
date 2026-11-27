@@ -1,3 +1,8 @@
+---
+name: find-cycles
+description: Find the groups of files that depend on one another in a cycle, using Cartographer's import graph. Use during architecture reviews, before a refactor, or when investigating initialisation-order problems.
+---
+
 # Find Circular Dependencies
 
 Find the groups of files that depend on one another in a cycle.
