@@ -44,6 +44,11 @@ impl CartographerServer {
 
         // Store in DB if available (full mode); skip in parse-only mode.
         if let Some(db) = &self.db {
+            // Imports first, as in the indexer: the hash marks the file as up
+            // to date and must not be stored ahead of its imports.
+            replace_imports(db, &input.project, &input.file_path, &result.imports)
+                .map_err(|e| McpError::internal_error(e, None))?;
+
             upsert_file(
                 db,
                 &input.project,
@@ -53,9 +58,6 @@ impl CartographerServer {
                 &hash,
             )
             .map_err(|e| McpError::internal_error(e, None))?;
-
-            replace_imports(db, &input.project, &input.file_path, &result.imports)
-                .map_err(|e| McpError::internal_error(e, None))?;
         }
 
         #[derive(serde::Serialize)]

@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::db::client::open;
@@ -103,6 +103,12 @@ fn line_starting<'a>(context: &'a str, prefix: &str) -> &'a str {
 /// line to `SERVER`, so `git diff --numstat HEAD` reports `1 0 src/server.ts`.
 /// False when git is unavailable here.
 fn commit_then_edit_server(project: &TestProject) -> bool {
+    commit_then_edit_server_in(project, Path::new(&project.root))
+}
+
+/// The same, with the git repository at `repository`: the project directory
+/// or one above it.
+fn commit_then_edit_server_in(project: &TestProject, repository: &Path) -> bool {
     let git = |args: &[&str]| {
         Command::new("git")
             .args([
@@ -114,7 +120,7 @@ fn commit_then_edit_server(project: &TestProject) -> bool {
                 "commit.gpgsign=false",
             ])
             .args(args)
-            .current_dir(&project.root)
+            .current_dir(repository)
             .output()
             .is_ok_and(|o| o.status.success())
     };
@@ -259,6 +265,27 @@ fn reading_by_absolute_path_reports_the_same_file() {
 fn post_edit_reports_the_edited_files_dependents() {
     let project = indexed_project();
     if !commit_then_edit_server(&project) {
+        return;
+    }
+
+    let context = context_for(
+        "PostToolUse",
+        post_edit(&project.store_path, input(&project.root)),
+    );
+
+    assert!(
+        context.contains(&format!("- `{SERVER}` (+1/-0) — 2 dependents")),
+        "{context}"
+    );
+}
+
+// git names changed files from the repository's root, which is not the
+// project when the session was started in a subdirectory.
+#[test]
+fn post_edit_reports_an_edited_file_of_a_project_below_the_repository_root() {
+    let project = indexed_project();
+    let above = Path::new(&project.root).parent().unwrap();
+    if !commit_then_edit_server_in(&project, above) {
         return;
     }
 

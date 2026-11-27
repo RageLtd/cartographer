@@ -113,6 +113,9 @@ fn reconcile(
                 continue;
             }
         };
+        // Imports first. The hash is what marks a file as up to date, so it
+        // must not be stored while the file's imports are still the old ones.
+        replace_imports(db, project, file_path, &parsed.imports)?;
         upsert_file(
             db,
             project,
@@ -121,7 +124,6 @@ fn reconcile(
             &parsed.symbols,
             &hash,
         )?;
-        replace_imports(db, project, file_path, &parsed.imports)?;
         reparsed.push(file_path.clone());
     }
 

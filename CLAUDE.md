@@ -80,7 +80,7 @@ The repository root is also the plugin. `claude plugin validate .` checks it, an
 
 - **`.claude-plugin/plugin.json`** — the manifest. It registers the MCP server (`mcpServers`); nothing else does, and the marketplace entry in `RageLtd/claude-plugins` cannot while this file exists. `commands/` and `skills/` are found by default and need no field.
 - **`scripts/run-server.sh`** — the command the manifest registers. It downloads the binary if it is missing, then `exec`s it. It is a launcher because a stdio server that fails its first connection is not started again, and on a first session the server can start before the hook below has finished. Only the binary may write to standard output there: it is the MCP channel.
-- **`scripts/ensure-binary.sh`** (and `.ps1`) — run by the SessionStart hook: downloads the latest release's binary for the platform into `~/.cartographer/bin` when the recorded version differs. A failed download leaves the installed binary and exits non-zero.
+- **`scripts/ensure-binary.sh`** — run by the SessionStart hook: downloads the latest release's binary for the platform into `~/.cartographer/bin` when the recorded version differs. A failed download leaves the installed binary and exits non-zero. macOS and Linux only; Windows is not supported and gets no release asset.
 - **`hooks/hooks.json`** — the hooks, each a `cartographer hook:*` subcommand of the installed binary.
 - **`commands/<name>.md`** — slash commands, named `/cartographer:<name>` after the plugin and the file. **`skills/<name>/SKILL.md`** — skills, each with `name` and `description` frontmatter.
 - **`tests/ensure_binary.rs`** — runs both scripts for real with a stand-in `curl` and a temporary `HOME`.

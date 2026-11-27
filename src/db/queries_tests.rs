@@ -351,10 +351,24 @@ fn suffix_lookup_returns_files_ending_with_the_suffix() {
         add_file(&db, PROJECT, &p(file), &[]);
     }
 
-    let mut found = find_files_by_suffix(&db, PROJECT, "ext.rs", 10).unwrap();
-    found.sort();
+    let found = find_files_by_suffix(&db, PROJECT, "parser/rust_ext.rs", 10).unwrap();
 
     assert_eq!(found, vec![p("src/parser/rust_ext.rs")]);
+}
+
+#[test]
+fn suffix_lookup_matches_whole_path_segments_only() {
+    let (db, _dir) = store();
+    for file in ["src/auth.rs", "src/oauth.rs", "src/web/auth.rs"] {
+        add_file(&db, PROJECT, &p(file), &[]);
+    }
+
+    let mut by_name = find_files_by_suffix(&db, PROJECT, "auth.rs", 10).unwrap();
+    by_name.sort();
+    let by_full_path = find_files_by_suffix(&db, PROJECT, &p("src/auth.rs"), 10).unwrap();
+
+    assert_eq!(by_name, vec![p("src/auth.rs"), p("src/web/auth.rs")]);
+    assert_eq!(by_full_path, vec![p("src/auth.rs")]);
 }
 
 #[test]
@@ -387,7 +401,7 @@ fn suffix_lookup_treats_wildcards_literally() {
         vec![p("src/rust_ext.rs")]
     );
     assert_eq!(
-        find_files_by_suffix(&db, PROJECT, "%.rs", 10).unwrap(),
+        find_files_by_suffix(&db, PROJECT, "odd%.rs", 10).unwrap(),
         vec![p("src/odd%.rs")]
     );
     assert_eq!(

@@ -119,20 +119,18 @@ fn get_importers_of(
 }
 
 fn get_file_symbols(db: &Db, project: &str, file_path: &str) -> Result<Vec<Symbol>, String> {
-    let symbols: Option<String> = db.read(
+    let symbols: Option<Vec<Symbol>> = db.read(
         &format!("Failed to read the symbols of {file_path}"),
         |conn| {
             conn.query_row(
                 "SELECT symbols FROM files WHERE project = ?1 AND file_path = ?2",
                 [project, file_path],
-                |row| row.get(0),
+                |row| json_column(row, 0),
             )
             .optional()
         },
     )?;
-    Ok(symbols
-        .and_then(|s| sonic_rs::from_str(&s).ok())
-        .unwrap_or_default())
+    Ok(symbols.unwrap_or_default())
 }
 
 // ============================================================================
@@ -149,28 +147,20 @@ pub fn search_files(
         return Ok(vec![]);
     };
 
-    let rows: Vec<(String, String)> =
-        db.read(&format!("Failed to search for {query:?}"), |conn| {
-            conn.prepare(
-                "SELECT files.file_path, files.symbols
+    db.read(&format!("Failed to search for {query:?}"), |conn| {
+        conn.prepare(
+            "SELECT files.file_path, files.symbols
              FROM file_search JOIN files ON files.id = file_search.rowid
              WHERE file_search MATCH ?1 AND files.project = ?2
              ORDER BY bm25(file_search)
              LIMIT ?3",
-            )?
-            // To SQLite a negative LIMIT means no limit.
-            .query_map(params![expression, project, limit.max(0)], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
-            .collect()
-        })?;
-    Ok(rows
-        .into_iter()
-        .map(|(file_path, symbols)| {
-            let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols).unwrap_or_default();
-            (file_path, symbols)
-        })
-        .collect())
+        )?
+        // To SQLite a negative LIMIT means no limit.
+        .query_map(params![expression, project, limit.max(0)], |row| {
+            Ok((row.get(0)?, json_column(row, 1)?))
+        })?
+        .collect()
+    })
 }
 
 /// The FTS5 expression requiring every word of `query`, or `None` when it has
@@ -201,12 +191,12 @@ pub fn get_file_detail(
     project: &str,
     file_path: &str,
 ) -> Result<Option<FileDetail>, String> {
-    let file_row: Option<(String, String)> =
+    let file_row: Option<(String, Vec<Symbol>)> =
         db.read(&format!("Failed to read file {file_path}"), |conn| {
             conn.query_row(
                 "SELECT language, symbols FROM files WHERE project = ?1 AND file_path = ?2",
                 [project, file_path],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, json_column(row, 1)?)),
             )
             .optional()
         })?;
@@ -214,8 +204,6 @@ pub fn get_file_detail(
         Some(r) => r,
         None => return Ok(None),
     };
-
-    let symbols: Vec<Symbol> = sonic_rs::from_str(&symbols).unwrap_or_default();
 
     Ok(Some(FileDetail {
         file_path: file_path.to_string(),
@@ -228,11 +216,19 @@ pub fn get_file_detail(
 
 /// A (path, imported symbols) pair from a row of path and symbols JSON.
 fn edge_row(row: &rusqlite::Row) -> rusqlite::Result<(String, Vec<String>)> {
-    let symbols: String = row.get(1)?;
-    Ok((
-        row.get(0)?,
-        sonic_rs::from_str(&symbols).unwrap_or_default(),
-    ))
+    Ok((row.get(0)?, json_column(row, 1)?))
+}
+
+/// The JSON stored in column `index`. Text that is not the expected JSON is an
+/// error: read as empty, a damaged row would look like a file with no symbols.
+fn json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row,
+    index: usize,
+) -> rusqlite::Result<T> {
+    let text: String = row.get(index)?;
+    sonic_rs::from_str(&text).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 #[cfg(test)]

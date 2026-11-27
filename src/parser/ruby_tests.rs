@@ -160,6 +160,13 @@ fn class_methods_are_private_only_through_private_class_method() {
 }
 
 #[test]
+fn a_class_method_defined_as_the_argument_of_private_class_method_is_private() {
+    let symbols = symbols_of("class A\n  private_class_method def self.build; end\nend\n");
+
+    assert_eq!(visibility_of(&symbols, "self.build"), Visibility::Private);
+}
+
+#[test]
 fn protected_methods_are_not_public() {
     let symbols =
         symbols_of("class A\n  protected\n  def guarded; end\n  public\n  def open; end\nend\n");

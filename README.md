@@ -35,7 +35,7 @@ What the plugin sets up:
 
 Then index a project once, with `/cartographer:index`.
 
-Supported: macOS on Apple silicon and Intel, and Linux on x64. On Windows the binary is downloaded but the MCP server is not started, because the command that starts it is a shell script; the tools are not available there yet.
+Supported: macOS on Apple silicon and Intel, and Linux on x64. Windows is not supported.
 
 ## Languages
 

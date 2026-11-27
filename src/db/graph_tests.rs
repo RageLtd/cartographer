@@ -206,6 +206,23 @@ fn file_detail_lists_language_symbols_imports_and_dependents() {
     assert_eq!(detail.dependents, vec![(d, strings(&["A"]))]);
 }
 
+// Read as "no symbols", a damaged row would look like an empty file.
+#[test]
+fn stored_symbols_that_cannot_be_read_back_are_an_error() {
+    let (db, _dir) = store();
+    let (a, _b, _c, _d) = chain(&db);
+    db.write("damage the stored symbols", |tx| {
+        tx.execute_batch(
+            "UPDATE files SET symbols = 'not json'; UPDATE imports SET symbols = 'not json'",
+        )
+    })
+    .unwrap();
+
+    assert!(get_file_detail(&db, PROJECT, &a).is_err());
+    assert!(search_files(&db, PROJECT, "src", 10).is_err());
+    assert!(walk_import_graph(&db, PROJECT, std::slice::from_ref(&a), Some(1), Some(5)).is_err());
+}
+
 // ============================================================================
 // search_files
 // ============================================================================

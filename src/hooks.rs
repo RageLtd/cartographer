@@ -411,9 +411,13 @@ fn format_compact_file_context(
 
 // --- Git helpers ---
 
+/// (lines added, lines removed, path relative to `cwd`) for each changed file
+/// under `cwd`.
 fn git_changed_files(cwd: &str) -> Vec<(String, String, String)> {
     Command::new("git")
-        .args(["diff", "--numstat", "HEAD"])
+        // Without `--relative` git names files from the repository's root,
+        // which is not `cwd` when the session started in a subdirectory.
+        .args(["diff", "--relative", "--numstat", "HEAD"])
         .current_dir(cwd)
         .output()
         .ok()

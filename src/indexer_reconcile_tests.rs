@@ -425,6 +425,29 @@ fn a_stored_file_the_walk_skips_is_kept_until_it_is_deleted() {
     }
 }
 
+// A file recorded with its new hash is not looked at again until it changes,
+// so one recorded without its imports would keep the wrong edges.
+#[test]
+fn a_file_whose_imports_cannot_be_stored_is_not_recorded_as_indexed() {
+    for kind in RUNS {
+        let project = test_project();
+        let db = open(&project.store_path).unwrap();
+        rusqlite::Connection::open(&project.store_path)
+            .unwrap()
+            .execute_batch("DROP TABLE imports")
+            .unwrap();
+
+        let outcome = try_run(&db, &project, kind);
+
+        assert!(outcome.is_err(), "{kind:?}");
+        assert_eq!(
+            crate::db::queries::get_file_paths(&db, &project.root).unwrap(),
+            Vec::<String>::new(),
+            "{kind:?}"
+        );
+    }
+}
+
 // ============================================================================
 // A change in one file that alters how another file's imports resolve
 // ============================================================================

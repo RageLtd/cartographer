@@ -7,8 +7,6 @@ use super::client::Db;
 use super::search_words::search_words;
 use crate::types::{ImportEdge, Symbol};
 
-const EMPTY_JSON_ARRAY: &str = "[]";
-
 fn epoch_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -28,8 +26,8 @@ pub fn upsert_file(
     symbols: &[Symbol],
     content_hash: &str,
 ) -> Result<(), String> {
-    let symbols_json =
-        sonic_rs::to_string(symbols).unwrap_or_else(|_| EMPTY_JSON_ARRAY.to_string());
+    let symbols_json = sonic_rs::to_string(symbols)
+        .map_err(|e| format!("Failed to serialize the symbols of {file_path}: {e}"))?;
     let mut words = search_words(file_path);
     for symbol in symbols {
         words.extend(search_words(&symbol.name));
@@ -114,7 +112,11 @@ pub fn replace_imports(
     edges: &[ImportEdge],
 ) -> Result<(), String> {
     let now = epoch_ms();
-    let edges = merge_duplicate_edges(edges);
+    let edges: Vec<(ImportEdge, String)> = merge_duplicate_edges(edges)
+        .into_iter()
+        .map(|edge| sonic_rs::to_string(&edge.symbols).map(|symbols_json| (edge, symbols_json)))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Failed to serialize the imports of {source_path}: {e}"))?;
 
     db.write(
         &format!("Failed to replace the imports of {source_path}"),
@@ -129,9 +131,7 @@ pub fn replace_imports(
                      updated_at_epoch)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
-            for edge in &edges {
-                let symbols_json = sonic_rs::to_string(&edge.symbols)
-                    .unwrap_or_else(|_| EMPTY_JSON_ARRAY.to_string());
+            for (edge, symbols_json) in &edges {
                 insert.execute(params![
                     project,
                     edge.source,
@@ -174,8 +174,9 @@ fn merge_duplicate_edges(edges: &[ImportEdge]) -> Vec<ImportEdge> {
 // Stats
 // ============================================================================
 
-/// Indexed files in `project` whose path ends with `suffix` — resolves bare
-/// file mentions such as `auth.rs` to full paths.
+/// Indexed files in `project` whose path ends with the path `suffix` — resolves
+/// bare file mentions such as `auth.rs` to full paths. The suffix matches whole
+/// path segments, so `auth.rs` does not find `oauth.rs`.
 pub fn find_files_by_suffix(
     db: &Db,
     project: &str,
@@ -183,7 +184,11 @@ pub fn find_files_by_suffix(
     limit: i64,
 ) -> Result<Vec<String>, String> {
     // GLOB rather than LIKE: it is case-sensitive, like paths.
-    let pattern = format!("*{}", glob_literal(suffix));
+    let pattern = if suffix.starts_with('/') {
+        glob_literal(suffix)
+    } else {
+        format!("*/{}", glob_literal(suffix))
+    };
     db.read(
         &format!("Failed to search files by suffix {suffix:?}"),
         |conn| {

@@ -56,8 +56,13 @@ pub fn uses_in_file(
 
     let target = normalize_path(Path::new(target));
     let names = if normalize_path(Path::new(file_path)) == target {
+        let own_name = if symbol == DEFAULT_EXPORT {
+            default_export_name(tree.root_node(), source.as_bytes())
+        } else {
+            Some(symbol.to_string())
+        };
         Names {
-            locals: vec![symbol.to_string()],
+            locals: own_name.into_iter().collect(),
             ..Names::default()
         }
     } else {
@@ -224,6 +229,47 @@ fn names_bound_to(
         }
     }
     names
+}
+
+/// What a file calls the thing it exports as its default: `Foo` in
+/// `export default function Foo() {}`, `export default Foo;` and
+/// `export { Foo as default };`. `None` when the default export has no name,
+/// or the file has none.
+fn default_export_name(root: Node, source: &[u8]) -> Option<String> {
+    let text = |node: Node| node.utf8_text(source).unwrap_or("").to_string();
+    let mut cursor = root.walk();
+    for statement in root.children(&mut cursor) {
+        if statement.kind() != "export_statement"
+            || statement.child_by_field_name("source").is_some()
+        {
+            continue;
+        }
+        let mut cursor = statement.walk();
+        for child in statement.children(&mut cursor) {
+            match child.kind() {
+                "default" => {
+                    let declared = statement
+                        .child_by_field_name("declaration")
+                        .and_then(|declaration| declaration.child_by_field_name("name"));
+                    let named = statement
+                        .child_by_field_name("value")
+                        .filter(|value| value.kind() == "identifier");
+                    return declared.or(named).map(text);
+                }
+                "export_clause" => {
+                    let mut cursor = child.walk();
+                    for specifier in child.children(&mut cursor) {
+                        let alias = specifier.child_by_field_name("alias").map(text);
+                        if alias.as_deref() == Some(DEFAULT_EXPORT) {
+                            return specifier.child_by_field_name("name").map(text);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Visits `root` and everything under it, without recursion: a tree can be

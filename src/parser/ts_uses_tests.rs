@@ -208,6 +208,30 @@ fn the_defining_file_uses_its_own_symbol_where_it_names_it() {
     );
 }
 
+// Inside its own file a default export has no name `default`: it is whatever
+// the file calls the thing it exports.
+#[test]
+fn the_defining_file_uses_its_default_export_under_the_name_it_declares() {
+    let dir = project(&[
+        (
+            "src/declared.ts",
+            "export default function Foo() {}\n\nFoo();\n",
+        ),
+        ("src/named.ts", "class Bar {}\n\nexport default Bar;\n"),
+        (
+            "src/listed.ts",
+            "const baz = 1;\n\nexport { baz as default };\n",
+        ),
+        ("src/anonymous.ts", "export default { a: 1 };\n"),
+    ]);
+    let own_default = |file: &str| uses(&dir, file, file, "default").lines;
+
+    assert_eq!(own_default("src/declared.ts"), vec![1, 3]);
+    assert_eq!(own_default("src/named.ts"), vec![1, 3]);
+    assert_eq!(own_default("src/listed.ts"), vec![1, 3]);
+    assert_eq!(own_default("src/anonymous.ts"), Vec::<usize>::new());
+}
+
 // ============================================================================
 // Re-exports
 // ============================================================================

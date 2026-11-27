@@ -193,7 +193,15 @@ fn extract_ruby_recursive(
                     (None, Some(args)) if method_name == RUBY_PRIVATE_CLASS_METHOD => {
                         let mut arg_cursor = args.walk();
                         for arg in args.children(&mut arg_cursor) {
-                            if let Some(name) = ruby_name_argument(&arg, source_bytes) {
+                            // `private_class_method def self.x`
+                            if arg.kind() == RUBY_SINGLETON_METHOD {
+                                symbols.extend(ruby_method_symbol(
+                                    source,
+                                    &arg,
+                                    source_bytes,
+                                    Visibility::Private,
+                                ));
+                            } else if let Some(name) = ruby_name_argument(&arg, source_bytes) {
                                 set_ruby_visibility(
                                     symbols,
                                     &own_symbols,
