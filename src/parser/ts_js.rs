@@ -10,15 +10,22 @@ use super::resolver::{is_relative_import, resolve_ts_js_import};
 use super::workspace::Workspace;
 
 /// Resolves the import specifiers of one file.
-struct Importer<'a> {
+pub(super) struct Importer<'a> {
     file_path: &'a str,
     /// Read from disk the first time a specifier could name a workspace
     /// package, and at most once for the file.
     workspace: OnceCell<Option<Workspace>>,
 }
 
-impl Importer<'_> {
-    fn resolve(&self, specifier: &str) -> Option<String> {
+impl<'a> Importer<'a> {
+    pub(super) fn new(file_path: &'a str) -> Self {
+        Self {
+            file_path,
+            workspace: OnceCell::new(),
+        }
+    }
+
+    pub(super) fn resolve(&self, specifier: &str) -> Option<String> {
         if is_relative_import(specifier) {
             return resolve_ts_js_import(specifier, self.file_path);
         }
@@ -38,10 +45,7 @@ pub fn extract_ts_js(
     let mut imports = Vec::new();
     let mut symbols = Vec::new();
     let source_bytes = source.as_bytes();
-    let importer = Importer {
-        file_path,
-        workspace: OnceCell::new(),
-    };
+    let importer = Importer::new(file_path);
 
     let mut cursor = root.walk();
     for node in root.children(&mut cursor) {

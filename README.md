@@ -110,6 +110,8 @@ Adding a *built-in* language still means a grammar crate dependency, a `BuiltinL
 | `cartographer_search` | Full-text search across file paths and symbol names |
 | `cartographer_get_file_info` | Detailed file info: symbols, imports, dependents |
 | `cartographer_find_cycles` | List each group of files that depend on one another in a cycle |
+| `cartographer_find_uses` | Find every use of a symbol across the project, by file and line (TypeScript and JavaScript) |
+| `cartographer_uses_in_file` | Find where one file uses a symbol another file exports; needs no index |
 | `cartographer_parse_file` | Parse a single file's AST and store in DB |
 | `cartographer_detect_changes` | Re-parse new and changed files, remove deleted ones, and list both |
 | `cartographer_stats` | File count, import edges, languages breakdown |
@@ -180,7 +182,7 @@ The file is a cache of what the parser found. A file written under a different s
 
 ### Parse-only mode
 
-`cartographer --parse-only` starts the server without opening the index. `cartographer_parse_file` and `cartographer_index_project` parse and return results, while change detection and the graph, search and stats tools report that storage is unavailable. Mimir runs Cartographer this way and keeps its own index.
+`cartographer --parse-only` starts the server without opening the index. `cartographer_parse_file`, `cartographer_index_project` and `cartographer_uses_in_file` parse and return results, while change detection and the graph, search, stats and `cartographer_find_uses` tools report that storage is unavailable. Mimir runs Cartographer this way and keeps its own index.
 
 Every release ships one binary per platform, `cartographer-<platform>`.
 

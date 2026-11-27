@@ -6,8 +6,9 @@ use rmcp::{tool, tool_router, ErrorData as McpError};
 
 use crate::db::queries::{replace_imports, upsert_file};
 use crate::indexer::{self, full_index, walk_project_files};
+use crate::parser::ts_uses::uses_in_file;
 use crate::parser::{hash_file, parse_file};
-use crate::server_types::{ParseFileInput, ProjectInput};
+use crate::server_types::{ParseFileInput, ProjectInput, UsesInFileInput};
 
 use super::CartographerServer;
 
@@ -167,5 +168,41 @@ impl CartographerServer {
                 ))]))
             }
         }
+    }
+
+    #[tool(
+        name = "cartographer_uses_in_file",
+        description = "Find where one file uses a symbol that another file exports. Returns the lines of the file that name the symbol, and the names the file re-exports it under, if any, for following the symbol to the files that import from this one. Give the file to look in, the file that exports the symbol, and the symbol's name as that file exports it (`default` for a default export). Understands renamed imports, namespace imports and imports by workspace package name. TypeScript and JavaScript only. This parses the one file and needs no index, so it works in parse-only mode; cartographer_find_uses answers for a whole project when there is an index."
+    )]
+    fn uses_in_file_tool(
+        &self,
+        Parameters(input): Parameters<UsesInFileInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let uses = match uses_in_file(
+            &self.registry,
+            &input.file_path,
+            &input.target_file,
+            &input.symbol,
+        ) {
+            Ok(uses) => uses,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct UsesOut {
+            file_path: String,
+            lines: Vec<usize>,
+            re_exported_as: Vec<String>,
+        }
+
+        let json = sonic_rs::to_string_pretty(&UsesOut {
+            file_path: input.file_path,
+            lines: uses.lines,
+            re_exported_as: uses.re_exported_as,
+        })
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }

@@ -10,7 +10,8 @@ use crate::constants::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_RESULTS};
 use crate::db::cycles::find_cycles;
 use crate::db::graph::{get_file_detail, search_files, walk_import_graph};
 use crate::db::queries::{get_file_count, get_import_count, get_language_counts};
-use crate::server_types::{FileInfoInput, ProjectInput, QueryInput, SearchInput};
+use crate::server_types::{FileInfoInput, FindUsesInput, ProjectInput, QueryInput, SearchInput};
+use crate::uses::{find_uses, SymbolUses};
 
 use super::CartographerServer;
 
@@ -303,6 +304,81 @@ impl CartographerServer {
                 }
             })
             .collect();
+
+        let json = sonic_rs::to_string_pretty(&out)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "cartographer_find_uses",
+        description = "Find every use of a symbol across the project: each file that uses it and the lines where it is named. Give the file that defines the symbol and the symbol's name as that file exports it (`default` for a default export). Follows renamed imports, namespace imports (`ns.symbol`), imports by workspace package name, and re-exports through to the files that import from the re-exporting file. Only identifiers count, so comments and strings do not. TypeScript and JavaScript only. A use is matched by name within a file that imports the symbol, so a local variable of the same name in such a file is counted too. Says so when the file does not define the symbol, which is a different answer from a symbol nothing else uses."
+    )]
+    fn find_uses_tool(
+        &self,
+        Parameters(input): Parameters<FindUsesInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self.require_db()?;
+        let relative = |path: &str| {
+            path.strip_prefix(&input.project)
+                .unwrap_or(path)
+                .trim_start_matches('/')
+                .to_string()
+        };
+        let text = |message: String| Ok(CallToolResult::success(vec![Content::text(message)]));
+
+        let found = match find_uses(
+            db,
+            &self.registry,
+            &input.project,
+            &input.file_path,
+            &input.symbol,
+        ) {
+            Ok(SymbolUses::Found(found)) => found,
+            Ok(SymbolUses::FileNotIndexed) => {
+                return text(format!("File not found in index: {}", input.file_path));
+            }
+            Ok(SymbolUses::SymbolNotDefined { defined }) => {
+                return text(format!(
+                    "No symbol named `{}` is defined in {}. It defines: {}.",
+                    input.symbol,
+                    relative(&input.file_path),
+                    defined.join(", ")
+                ));
+            }
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        #[derive(serde::Serialize)]
+        struct FileOut {
+            file: String,
+            lines: Vec<usize>,
+        }
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct UsesOut {
+            symbol: String,
+            defined_in: String,
+            total_files: usize,
+            total_lines: usize,
+            files: Vec<FileOut>,
+        }
+
+        let out = UsesOut {
+            symbol: input.symbol.clone(),
+            defined_in: relative(&input.file_path),
+            total_files: found.len(),
+            total_lines: found.iter().map(|file| file.lines.len()).sum(),
+            files: found
+                .into_iter()
+                .map(|file| FileOut {
+                    file: relative(&file.file_path),
+                    lines: file.lines,
+                })
+                .collect(),
+        };
 
         let json = sonic_rs::to_string_pretty(&out)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;

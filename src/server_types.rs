@@ -44,3 +44,23 @@ pub struct FileInfoInput {
     /// Project root directory (absolute path)
     pub project: String,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct FindUsesInput {
+    /// Project root directory (absolute path)
+    pub project: String,
+    /// Absolute path to the file that defines the symbol
+    pub file_path: String,
+    /// The symbol's name as that file exports it; `default` for its default export
+    pub symbol: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct UsesInFileInput {
+    /// Absolute path to the file to look in
+    pub file_path: String,
+    /// Absolute path to the file that exports the symbol
+    pub target_file: String,
+    /// The symbol's name as the target file exports it; `default` for its default export
+    pub symbol: String,
+}

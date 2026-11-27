@@ -12,6 +12,7 @@ mod project_fixture_tests;
 mod server;
 mod server_types;
 mod types;
+mod uses;
 
 use std::sync::Arc;
 

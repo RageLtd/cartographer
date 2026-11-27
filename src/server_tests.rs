@@ -14,12 +14,14 @@ fn tool_router_lists_exactly_the_code_graph_tools() {
         [
             "cartographer_detect_changes",
             "cartographer_find_cycles",
+            "cartographer_find_uses",
             "cartographer_get_file_info",
             "cartographer_index_project",
             "cartographer_parse_file",
             "cartographer_query",
             "cartographer_search",
             "cartographer_stats",
+            "cartographer_uses_in_file",
         ]
     );
 }
