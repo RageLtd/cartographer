@@ -208,5 +208,19 @@ fn a_rust_module_using_its_parent_is_indexed_without_a_cycle() {
     );
 }
 
+// A link to a directory above itself has no end if it is followed.
+#[cfg(unix)]
+#[test]
+fn a_directory_reached_through_a_symbolic_link_is_not_walked() {
+    let project = test_project();
+    std::os::unix::fs::symlink(&project.root, project.path("src/loop")).unwrap();
+
+    let walked = crate::indexer::walk_project_files(&LanguageRegistry::builtin(), &project.root);
+
+    let through_the_link: Vec<&String> = walked.iter().filter(|f| f.contains("/loop/")).collect();
+    assert_eq!(through_the_link, Vec::<&String>::new());
+    assert_eq!(walked.len(), FILE_COUNT);
+}
+
 #[path = "indexer_reconcile_tests.rs"]
 mod reconcile;

@@ -171,8 +171,12 @@ fn walk_recursive(registry: &LanguageRegistry, dir: &Path, files: &mut Vec<Strin
         let path = entry.path();
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
+        // The entry's own type, which does not follow a symbolic link. A link
+        // to a directory is not walked: one that points above itself would
+        // never end. A link to a file is still read as that file.
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
 
-        if path.is_dir() {
+        if is_dir {
             if SKIP_DIRS.contains(name_str.as_ref()) || name_str.starts_with('.') {
                 continue;
             }

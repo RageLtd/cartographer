@@ -77,7 +77,9 @@ pub fn walk_import_graph(
         });
     }
 
-    results.sort_by_key(|f| f.depth);
+    // By path within a depth, so that which files the limit cuts off does not
+    // depend on the order of a hash map.
+    results.sort_by(|a, b| (a.depth, &a.file_path).cmp(&(b.depth, &b.file_path)));
     results.truncate(max_results);
     Ok(results)
 }

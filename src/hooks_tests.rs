@@ -37,6 +37,13 @@ fn test_extract_file_mentions_typescript() {
 }
 
 #[test]
+fn a_mention_written_from_the_current_directory_drops_the_dot() {
+    let mentions = extract_file_mentions("check ./src/main.rs and ../lib/other.rs");
+
+    assert_eq!(mentions, vec!["../lib/other.rs", "src/main.rs"]);
+}
+
+#[test]
 fn test_extract_file_mentions_dedup() {
     let mentions = extract_file_mentions("src/main.rs and src/main.rs again");
     assert_eq!(mentions.len(), 1);

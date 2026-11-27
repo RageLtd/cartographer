@@ -184,11 +184,10 @@ pub fn find_files_by_suffix(
     limit: i64,
 ) -> Result<Vec<String>, String> {
     // GLOB rather than LIKE: it is case-sensitive, like paths.
-    let pattern = if suffix.starts_with('/') {
-        glob_literal(suffix)
-    } else {
-        format!("*/{}", glob_literal(suffix))
-    };
+    // The `/` keeps the match on a segment boundary. A suffix that brings its
+    // own is either a whole path or one written from the project's root.
+    let separator = if suffix.starts_with('/') { "" } else { "/" };
+    let pattern = format!("*{separator}{}", glob_literal(suffix));
     db.read(
         &format!("Failed to search files by suffix {suffix:?}"),
         |conn| {

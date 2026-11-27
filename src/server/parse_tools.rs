@@ -22,21 +22,25 @@ impl CartographerServer {
         &self,
         Parameters(input): Parameters<ParseFileInput>,
     ) -> Result<CallToolResult, McpError> {
-        let result = match parse_file(&self.registry, &input.file_path) {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Error parsing {}: {e}",
-                    input.file_path
-                ))]));
-            }
-        };
-
+        // Hashed before it is parsed, as the indexer does. The two read the
+        // file separately; if it is saved in between, the stored hash is then
+        // the older one and the next reconcile parses the file again. The
+        // other way round, a newer hash would vouch for an older parse.
         let hash = match hash_file(&input.file_path) {
             Ok(h) => h,
             Err(e) => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error hashing {}: {e}",
+                    input.file_path
+                ))]));
+            }
+        };
+
+        let result = match parse_file(&self.registry, &input.file_path) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error parsing {}: {e}",
                     input.file_path
                 ))]));
             }

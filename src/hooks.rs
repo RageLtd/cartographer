@@ -457,7 +457,8 @@ fn extract_file_mentions(text: &str) -> Vec<String> {
                 FILE_EXTENSIONS.contains(&ext) && (w.contains('/') || w.contains('.'))
             })
         })
-        .map(String::from)
+        // `./src/a.rs` is `src/a.rs`; left on, no indexed path would end with it.
+        .map(|w| w.trim_start_matches("./").to_string())
         .collect();
 
     mentions.sort();

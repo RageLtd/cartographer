@@ -366,9 +366,11 @@ fn suffix_lookup_matches_whole_path_segments_only() {
     let mut by_name = find_files_by_suffix(&db, PROJECT, "auth.rs", 10).unwrap();
     by_name.sort();
     let by_full_path = find_files_by_suffix(&db, PROJECT, &p("src/auth.rs"), 10).unwrap();
+    let from_the_project_root = find_files_by_suffix(&db, PROJECT, "/src/auth.rs", 10).unwrap();
 
     assert_eq!(by_name, vec![p("src/auth.rs"), p("src/web/auth.rs")]);
     assert_eq!(by_full_path, vec![p("src/auth.rs")]);
+    assert_eq!(from_the_project_root, vec![p("src/auth.rs")]);
 }
 
 #[test]

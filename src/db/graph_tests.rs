@@ -106,6 +106,36 @@ fn walk_honours_max_results() {
     assert_eq!(results[0].reason, "entry");
 }
 
+#[test]
+fn a_walk_cut_short_by_its_result_limit_keeps_the_same_files_every_time() {
+    let (db, _dir) = store();
+    let entry = p("src/entry.rs");
+    add_file(&db, PROJECT, &entry, &[]);
+    for name in ["h", "g", "f", "e", "d", "c", "b", "a"] {
+        let importer = p(&format!("src/{name}.rs"));
+        add_file(&db, PROJECT, &importer, &[]);
+        replace_imports(
+            &db,
+            PROJECT,
+            &importer,
+            &[edge(&importer, &entry, "./entry", &[])],
+        )
+        .unwrap();
+    }
+
+    let results =
+        walk_import_graph(&db, PROJECT, std::slice::from_ref(&entry), Some(1), Some(3)).unwrap();
+
+    assert_eq!(
+        walked(&results),
+        vec![
+            row(&p("src/a.rs"), 1, "dependent"),
+            row(&p("src/b.rs"), 1, "dependent"),
+            row(&entry, 0, "entry"),
+        ]
+    );
+}
+
 // The limits arrive from a tool call as signed numbers. A negative one must
 // not turn into a walk of the whole graph.
 #[test]
