@@ -45,9 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(report.registry);
 
     if parse_only {
-        // Parse-only mode: no DB connection required. Parsing tools work,
-        // query/search/stats tools return errors. mimir-acp handles storage.
-        tracing::info!("Cartographer MCP server starting in parse-only mode (no DB)");
+        // Parse-only mode: the index is not opened, and the server lists only
+        // the tools that parse. Whoever starts it this way keeps its own index.
+        tracing::info!("Cartographer MCP server starting in parse-only mode (no index)");
         let server = CartographerServer::parse_only(registry);
         let service = server.serve(rmcp::transport::io::stdio()).await?;
         service.waiting().await?;

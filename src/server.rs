@@ -5,6 +5,7 @@
 //! `ServerHandler` impl (handler.rs) serves.
 
 mod graph_tools;
+mod index_tools;
 mod parse_tools;
 
 use std::sync::Arc;
@@ -32,29 +33,30 @@ impl CartographerServer {
         }
     }
 
-    /// Parse-only mode: no DB, only parsing tools work.
-    /// Query/search/stats tools return errors guiding the caller
-    /// to use the server-side equivalents.
+    /// Parse-only mode: no index. The server lists only the tools that work
+    /// without one, so a caller can tell from the list what it can use.
     pub fn parse_only(registry: Arc<LanguageRegistry>) -> Self {
         Self {
             db: None,
             registry,
-            tool_router: Self::tool_router(),
+            tool_router: Self::parse_tools_router(),
         }
     }
 
-    /// Every tool the server exposes, assembled from the per-concern routers.
+    /// Every tool a server with an index exposes, assembled from the
+    /// per-concern routers.
     pub fn tool_router() -> ToolRouter<Self> {
-        Self::parse_tools_router() + Self::graph_tools_router()
+        Self::parse_tools_router() + Self::index_tools_router() + Self::graph_tools_router()
     }
 
-    /// Get the DB reference, or return an MCP error if in parse-only mode.
+    /// The index, or an MCP error on a parse-only server. A parse-only server
+    /// does not list the tools that call this, so the error is for a caller
+    /// that named one anyway.
     fn require_db(&self) -> Result<&Db, McpError> {
         self.db.as_ref().ok_or_else(|| {
             McpError::internal_error(
-                "This tool requires a database connection. In parse-only mode, \
-                 use the server-side equivalent (cartographer_query, \
-                 cartographer_search, etc. on mimir-server).",
+                "This tool needs the index, and this server was started with \
+                 --parse-only, which does not open one.",
                 None,
             )
         })

@@ -192,7 +192,7 @@ The file is a cache of what the parser found. A file written under a different s
 
 ### Parse-only mode
 
-`cartographer --parse-only` starts the server without opening the index. `cartographer_parse_file`, `cartographer_index_project` and `cartographer_uses_in_file` parse and return results, while change detection and the graph, search, stats and `cartographer_find_uses` tools report that storage is unavailable. Mimir runs Cartographer this way and keeps its own index.
+`cartographer --parse-only` starts the server without opening the index. It then lists only the two tools that need none, `cartographer_parse_file` and `cartographer_uses_in_file`, and no resources, so a program driving it can tell from the list what it can use. The other eight tools are not offered, and calling one by name gets "tool not found". Mimir runs Cartographer this way and keeps its own index.
 
 Every release ships one binary per platform, `cartographer-<platform>`.
 
