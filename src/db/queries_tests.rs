@@ -301,6 +301,24 @@ fn the_same_path_in_two_projects_is_two_files() {
 }
 
 #[test]
+fn file_paths_lists_only_the_projects_own_files() {
+    let (db, _dir) = store();
+    let (a, b, c) = (p("a.rs"), p("b.rs"), p("c.rs"));
+    add_file(&db, PROJECT, &a, &[]);
+    add_file(&db, PROJECT, &b, &[]);
+    add_file(&db, OTHER_PROJECT, &c, &[]);
+    assert_eq!(
+        get_file_paths(&db, "/nothing-indexed").unwrap(),
+        Vec::<String>::new()
+    );
+
+    let mut paths = get_file_paths(&db, PROJECT).unwrap();
+    paths.sort();
+
+    assert_eq!(paths, vec![a, b]);
+}
+
+#[test]
 fn removing_a_file_leaves_the_other_projects_copy() {
     let (db, _dir) = store();
     let (a, b) = (p("a.rs"), p("b.rs"));
@@ -376,47 +394,4 @@ fn suffix_lookup_treats_wildcards_literally() {
         find_files_by_suffix(&db, PROJECT, "_.rs", 10).unwrap(),
         Vec::<String>::new()
     );
-}
-
-// ============================================================================
-// Git status
-// ============================================================================
-
-#[test]
-fn git_status_round_trips_per_project() {
-    let (db, _dir) = store();
-    let first = HashMap::from([
-        ("src/a.rs".to_string(), "M".to_string()),
-        ("src/b.rs".to_string(), "??".to_string()),
-    ]);
-    let other = HashMap::from([("lib/x.rb".to_string(), "D".to_string())]);
-
-    save_git_status(&db, PROJECT, &first).unwrap();
-    save_git_status(&db, OTHER_PROJECT, &other).unwrap();
-
-    assert_eq!(get_last_git_status(&db, PROJECT).unwrap(), first);
-    assert_eq!(get_last_git_status(&db, OTHER_PROJECT).unwrap(), other);
-}
-
-#[test]
-fn saving_git_status_again_replaces_it() {
-    let (db, _dir) = store();
-    let first = HashMap::from([("src/a.rs".to_string(), "M".to_string())]);
-    let second = HashMap::from([("src/b.rs".to_string(), "A".to_string())]);
-
-    save_git_status(&db, PROJECT, &first).unwrap();
-    save_git_status(&db, PROJECT, &second).unwrap();
-    assert_eq!(get_last_git_status(&db, PROJECT).unwrap(), second);
-
-    save_git_status(&db, PROJECT, &HashMap::new()).unwrap();
-    assert!(get_last_git_status(&db, PROJECT).unwrap().is_empty());
-}
-
-#[test]
-fn git_status_of_a_project_with_none_saved_is_empty() {
-    let (db, _dir) = store();
-    let status = HashMap::from([("src/a.rs".to_string(), "M".to_string())]);
-    save_git_status(&db, OTHER_PROJECT, &status).unwrap();
-
-    assert!(get_last_git_status(&db, PROJECT).unwrap().is_empty());
 }

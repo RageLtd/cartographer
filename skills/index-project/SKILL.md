@@ -24,8 +24,8 @@ Step 2: Show stats (optional)
 ```
 
 ## Notes
-- Indexing is incremental — only changed files are re-parsed (content hash check)
+- Indexing is incremental — only changed files are re-parsed (content hash check), and files no longer on disk are removed from the index
 - Supported languages: TypeScript, JavaScript, TSX, JSX, Rust, Ruby, Elixir
 - External/bare imports (npm packages, crates, gems) are tracked but not resolved
-- The index persists in `~/.cartographer/map.db` across sessions
-- For updating after small changes, prefer `cartographer_detect_changes` instead
+- The index persists in `~/.cartographer/cartographer.db` across sessions
+- `cartographer_detect_changes` does the same work and lists which files changed

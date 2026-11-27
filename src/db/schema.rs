@@ -4,7 +4,7 @@ use rusqlite::{Connection, TransactionBehavior};
 /// `search_words` cuts the search text. The store is a cache of the index, so
 /// a file written under another version is emptied and refilled by the next
 /// index rather than migrated.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const USER_VERSION: &str = "user_version";
 
@@ -37,12 +37,6 @@ const SCHEMA: &str = "
         PRIMARY KEY (project, source_path, target_path, specifier)
     );
     CREATE INDEX imports_target ON imports (project, target_path);
-
-    CREATE TABLE git_state (
-        project TEXT PRIMARY KEY,
-        last_status TEXT NOT NULL,
-        updated_at_epoch INTEGER NOT NULL
-    );
 
     CREATE VIRTUAL TABLE file_search USING fts5(searchable, tokenize = 'unicode61');
 ";

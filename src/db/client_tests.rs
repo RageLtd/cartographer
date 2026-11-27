@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-
 use super::*;
 use crate::db::fixtures_tests::*;
 use crate::db::graph::search_files;
 use crate::db::queries::{
-    get_file_count, get_file_hash, get_import_count, get_last_git_status, get_project_stats,
-    remove_file, replace_imports, save_git_status, upsert_file,
+    get_file_count, get_file_hash, get_import_count, get_project_stats, remove_file,
+    replace_imports, upsert_file,
 };
 
 #[test]
@@ -13,13 +11,11 @@ fn data_survives_closing_and_reopening_the_store_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(STORE_FILE);
     let (a, b) = (p("src/a.rs"), p("src/b.rs"));
-    let status = HashMap::from([("src/a.rs".to_string(), "M".to_string())]);
     {
         let db = open(&path).unwrap();
         upsert_file(&db, PROJECT, &a, "rust", &symbols(&["persisted_fn"]), "h1").unwrap();
         add_file(&db, PROJECT, &b, &[]);
         replace_imports(&db, PROJECT, &a, &[edge(&a, &b, "./b", &["B"])]).unwrap();
-        save_git_status(&db, PROJECT, &status).unwrap();
     }
 
     let db = open(&path).unwrap();
@@ -30,7 +26,6 @@ fn data_survives_closing_and_reopening_the_store_file() {
     );
     assert_eq!(get_file_count(&db, PROJECT).unwrap(), 2);
     assert_eq!(get_import_count(&db, PROJECT).unwrap(), 1);
-    assert_eq!(get_last_git_status(&db, PROJECT).unwrap(), status);
     let found = search_files(&db, PROJECT, "persisted_fn", 10).unwrap();
     assert_eq!(
         found.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
@@ -134,15 +129,6 @@ fn writes_to_a_store_file_that_cannot_be_written_are_errors() {
     assert!(
         remove_file(&db, PROJECT, &a).is_err(),
         "remove_file reported Ok on a read-only store"
-    );
-    assert!(
-        save_git_status(
-            &db,
-            PROJECT,
-            &HashMap::from([("a".to_string(), "M".to_string())])
-        )
-        .is_err(),
-        "save_git_status reported Ok on a read-only store"
     );
 }
 

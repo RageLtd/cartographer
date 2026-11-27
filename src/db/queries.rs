@@ -78,6 +78,15 @@ pub fn get_file_hash(db: &Db, project: &str, file_path: &str) -> Result<Option<S
     })
 }
 
+/// Every file indexed for `project`.
+pub fn get_file_paths(db: &Db, project: &str) -> Result<Vec<String>, String> {
+    db.read("Failed to list the indexed files", |conn| {
+        conn.prepare("SELECT file_path FROM files WHERE project = ?1")?
+            .query_map([project], |row| row.get(0))?
+            .collect()
+    })
+}
+
 pub fn remove_file(db: &Db, project: &str, file_path: &str) -> Result<(), String> {
     db.write(&format!("Failed to remove file {file_path}"), |tx| {
         tx.execute(
@@ -230,45 +239,6 @@ pub fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
         conn.prepare("SELECT project, count(*) FROM files GROUP BY project")?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect()
-    })
-}
-
-// ============================================================================
-// Git state tracking
-// ============================================================================
-
-pub fn get_last_git_status(db: &Db, project: &str) -> Result<HashMap<String, String>, String> {
-    let status: Option<String> = db.read("Failed to read the saved git status", |conn| {
-        conn.query_row(
-            "SELECT last_status FROM git_state WHERE project = ?1",
-            [project],
-            |row| row.get(0),
-        )
-        .optional()
-    })?;
-    Ok(status
-        .and_then(|s| sonic_rs::from_str(&s).ok())
-        .unwrap_or_default())
-}
-
-pub fn save_git_status(
-    db: &Db,
-    project: &str,
-    status: &HashMap<String, String>,
-) -> Result<(), String> {
-    let json = sonic_rs::to_string(status).unwrap_or_else(|_| "{}".to_string());
-    let now = epoch_ms();
-
-    db.write("Failed to save git status", |tx| {
-        tx.execute(
-            "INSERT INTO git_state (project, last_status, updated_at_epoch)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (project) DO UPDATE SET
-                last_status = excluded.last_status,
-                updated_at_epoch = excluded.updated_at_epoch",
-            params![project, json, now],
-        )?;
-        Ok(())
     })
 }
 

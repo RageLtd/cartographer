@@ -11,7 +11,7 @@ Designed to complement [Goldfish](https://github.com/RageLtd/Goldfish) — Goldf
 ```
 File path → Tree-sitter AST parse → Store imports/symbols in the SQLite file
                                               │
-Agent writes/edits → git status diff → Re-parse changed files
+Agent writes/edits → compare content hashes → Re-parse changed files, drop deleted ones
                                               │
 Agent queries → Walk import graph (BFS, bounded) → Return relevant files
 ```
@@ -102,7 +102,7 @@ Adding a *built-in* language still means a grammar crate dependency, a `BuiltinL
 | `cartographer_get_file_info` | Detailed file info: symbols, imports, dependents |
 | `cartographer_find_cycles` | Detect circular dependencies in the import graph |
 | `cartographer_parse_file` | Parse a single file's AST and store in DB |
-| `cartographer_detect_changes` | Diff git status, re-parse changed files |
+| `cartographer_detect_changes` | Re-parse new and changed files, remove deleted ones, and list both |
 | `cartographer_stats` | File count, import edges, languages breakdown |
 
 ### Resources
@@ -159,10 +159,11 @@ A minimal import map in one SQLite file — no embeddings, no vectors. The file 
 
 - **files**: `(project, file_path, language, symbols, content_hash, last_parsed_epoch)` — `symbols` is a JSON string of `Symbol[]`
 - **imports**: `(project, source_path, target_path, specifier, symbols, updated_at_epoch)` — one row per source, target and specifier. Imports that share all three are stored as one edge carrying the symbols of each.
-- **git_state**: `(project, last_status, updated_at_epoch)` — for change detection
 - **file_search**: a full-text (FTS5) table over each file's path and symbol names
 
 Graph queries are a breadth-first walk over `imports`, one query per hop in each direction, bounded by depth and result count.
+
+`cartographer_index_project` and `cartographer_detect_changes` keep the index current the same way: they walk the project, re-parse every file whose content hash differs from the index, and remove files that are no longer on disk. Git is not consulted, so a pull, a checkout or a revert is picked up like any other change, and a project need not be a git repository.
 
 Search cuts names into words at punctuation and wherever letters meet digits, so `utf8_decode` is found by `utf`, `8` or `decode`. Every word of a query must match, case is ignored, and results are ranked by BM25.
 
@@ -170,7 +171,7 @@ The file is a cache of what the parser found. A file written under a different s
 
 ### Parse-only mode
 
-`cartographer --parse-only` starts the server without opening the index. `cartographer_parse_file`, `cartographer_index_project` and `cartographer_detect_changes` parse and return results, while the graph, search and stats tools report that storage is unavailable. Mimir runs Cartographer this way and keeps its own index.
+`cartographer --parse-only` starts the server without opening the index. `cartographer_parse_file` and `cartographer_index_project` parse and return results, while change detection and the graph, search and stats tools report that storage is unavailable. Mimir runs Cartographer this way and keeps its own index.
 
 Every release ships one binary per platform, `cartographer-<platform>`.
 

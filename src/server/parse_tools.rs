@@ -1,15 +1,11 @@
 //! Tools that parse source files: single-file parse, change detection, full index.
 
-use std::collections::HashMap;
-
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
 use rmcp::{tool, tool_router, ErrorData as McpError};
 
-use crate::db::queries::{get_last_git_status, replace_imports, save_git_status, upsert_file};
-use crate::indexer::{
-    diff_git_status, full_index, get_current_git_status, incremental_index, walk_project_files,
-};
+use crate::db::queries::{replace_imports, upsert_file};
+use crate::indexer::{self, full_index, walk_project_files};
 use crate::parser::{hash_file, parse_file};
 use crate::server_types::{ParseFileInput, ProjectInput};
 
@@ -101,56 +97,21 @@ impl CartographerServer {
 
     #[tool(
         name = "cartographer_detect_changes",
-        description = "Compare current git status against the last known snapshot to find changed files. Re-parses changed files and updates the import graph. Call this after file modifications."
+        description = "Bring the index in line with the project's files: re-parses files that are new or whose content changed, and removes files that are no longer on disk. It compares content, not git status, so it also sees a pull, a checkout or a revert. Call this after file modifications. Needs the index, so it is unavailable in parse-only mode."
     )]
     fn detect_changes(
         &self,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
-        // Get last known status from DB (or empty if parse-only)
-        let last_status = match &self.db {
-            Some(db) => get_last_git_status(db, &input.project)
-                .map_err(|e| McpError::internal_error(e, None))?,
-            None => HashMap::new(),
-        };
+        let db = self.require_db()?;
+        let changes = indexer::detect_changes(db, &self.registry, &input.project, &input.project)
+            .map_err(|e| McpError::internal_error(e, None))?;
 
-        let current_status = get_current_git_status(&self.registry, &input.project);
-        let (modified, deleted) = diff_git_status(&last_status, &current_status);
-
-        if modified.is_empty() && deleted.is_empty() {
-            if let Some(db) = &self.db {
-                save_git_status(db, &input.project, &current_status)
-                    .map_err(|e| McpError::internal_error(e, None))?;
-            }
+        if changes.reparsed.is_empty() && changes.removed.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No changes detected.",
             )]));
         }
-
-        // In full mode, do incremental index (parse + store).
-        // In parse-only mode, just parse modified files and report.
-        let (indexed, removed) = match &self.db {
-            Some(db) => {
-                let result =
-                    incremental_index(db, &self.registry, &input.project, &modified, &deleted)
-                        .map_err(|e| McpError::internal_error(e, None))?;
-                save_git_status(db, &input.project, &current_status)
-                    .map_err(|e| McpError::internal_error(e, None))?;
-                result
-            }
-            None => {
-                // Parse-only: parse each modified file to validate, count results
-                let mut idx = 0usize;
-                for file_path in &modified {
-                    if std::path::Path::new(file_path).exists()
-                        && parse_file(&self.registry, file_path).is_ok()
-                    {
-                        idx += 1;
-                    }
-                }
-                (idx, deleted.len())
-            }
-        };
 
         #[derive(serde::Serialize)]
         struct ChangesOut {
@@ -161,10 +122,10 @@ impl CartographerServer {
         }
 
         let json = sonic_rs::to_string_pretty(&ChangesOut {
-            indexed,
-            removed,
-            modified,
-            deleted,
+            indexed: changes.reparsed.len(),
+            removed: changes.removed.len(),
+            modified: changes.reparsed,
+            deleted: changes.removed,
         })
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 

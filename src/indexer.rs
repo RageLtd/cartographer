@@ -1,173 +1,138 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use crate::constants::SKIP_DIRS;
 use crate::db::client::Db;
 use crate::db::queries::{
-    get_file_hash, remove_file, replace_imports, save_git_status, upsert_file,
+    get_file_hash, get_file_paths, remove_file, replace_imports, upsert_file,
 };
 use crate::parser::registry::LanguageRegistry;
 use crate::parser::{hash_file, parse_file};
 
 // ============================================================================
-// Git status
+// Reconciling the index with the files on disk
 // ============================================================================
 
-pub fn get_current_git_status(
-    registry: &LanguageRegistry,
-    project_root: &str,
-) -> HashMap<String, String> {
-    let mut status = HashMap::new();
-
-    let output = Command::new("git")
-        .args(["status", "--porcelain=v1"])
-        .current_dir(project_root)
-        .output();
-
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return status,
-    };
-
-    let raw = String::from_utf8_lossy(&output.stdout);
-    for line in raw.lines().filter(|l| !l.is_empty()) {
-        if line.len() < 4 {
-            continue;
-        }
-        let status_code = line[..2].trim().to_string();
-        let file_rel = &line[3..];
-        let file_path = Path::new(project_root).join(file_rel);
-        let file_path_str = file_path.to_string_lossy().to_string();
-
-        if !registry.supports_path(&file_path_str) {
-            continue;
-        }
-
-        status.insert(file_path_str, status_code);
-    }
-
-    status
+/// What a reconcile changed in the index, by absolute path.
+pub struct Changes {
+    /// Files that were new or whose content had changed.
+    pub reparsed: Vec<String>,
+    /// Indexed files that are no longer on disk.
+    pub removed: Vec<String>,
 }
 
-pub fn diff_git_status(
-    last_status: &HashMap<String, String>,
-    current_status: &HashMap<String, String>,
-) -> (Vec<String>, Vec<String>) {
-    let mut modified = Vec::new();
-    let mut deleted = Vec::new();
-
-    for (file_path, status) in current_status {
-        if status == "D" || status == "D " {
-            deleted.push(file_path.clone());
-        } else if last_status.get(file_path) != Some(status) {
-            modified.push(file_path.clone());
-        }
-    }
-
-    for file_path in last_status.keys() {
-        if !current_status.contains_key(file_path) && !Path::new(file_path).exists() {
-            deleted.push(file_path.clone());
-        }
-    }
-
-    (modified, deleted)
+struct Reconciled {
+    changes: Changes,
+    unchanged: usize,
+    /// Files on disk that could not be read or parsed.
+    failed: usize,
 }
 
-// ============================================================================
-// Full index
-// ============================================================================
-
+/// Brings the index in line with the project's files. Returns how many files
+/// are indexed and how many could not be read or parsed.
 pub fn full_index(
     db: &Db,
     registry: &LanguageRegistry,
     project: &str,
     project_root: &str,
 ) -> Result<(usize, usize), String> {
-    let files = walk_project_files(registry, project_root);
-    let mut indexed = 0;
-    let mut skipped = 0;
-
-    for file_path in &files {
-        match index_single_file(db, registry, project, file_path) {
-            Ok(()) => indexed += 1,
-            Err(_) => skipped += 1,
-        }
-    }
-
-    let status = get_current_git_status(registry, project_root);
-    save_git_status(db, project, &status)?;
-
-    Ok((indexed, skipped))
+    let reconciled = reconcile(db, registry, project, project_root)?;
+    Ok((
+        reconciled.changes.reparsed.len() + reconciled.unchanged,
+        reconciled.failed,
+    ))
 }
 
-// ============================================================================
-// Incremental index
-// ============================================================================
-
-pub fn incremental_index(
+/// Brings the index in line with the project's files and says what changed.
+pub fn detect_changes(
     db: &Db,
     registry: &LanguageRegistry,
     project: &str,
-    modified: &[String],
-    deleted: &[String],
-) -> Result<(usize, usize), String> {
-    let mut indexed = 0;
-    let mut removed = 0;
+    project_root: &str,
+) -> Result<Changes, String> {
+    Ok(reconcile(db, registry, project, project_root)?.changes)
+}
 
-    for file_path in deleted {
-        remove_file(db, project, file_path)?;
-        removed += 1;
+/// Compares content hashes, never git: a pull, a checkout or a revert changes
+/// files without leaving anything for `git status` to report.
+///
+/// A file that cannot be read or parsed is counted and left as it was; a store
+/// failure stops the reconcile.
+fn reconcile(
+    db: &Db,
+    registry: &LanguageRegistry,
+    project: &str,
+    project_root: &str,
+) -> Result<Reconciled, String> {
+    let on_disk = walk_project_files(registry, project_root);
+    let on_disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
+
+    let mut removed = Vec::new();
+    for file_path in get_file_paths(db, project)? {
+        if !on_disk_set.contains(file_path.as_str()) {
+            remove_file(db, project, &file_path)?;
+            removed.push(file_path);
+        }
     }
 
-    for file_path in modified {
-        if !Path::new(file_path).exists() {
-            remove_file(db, project, file_path)?;
-            removed += 1;
+    let mut reparsed = Vec::new();
+    let mut unchanged = Vec::new();
+    let mut added = false;
+    let mut failed = 0;
+    for file_path in &on_disk {
+        let hash = match hash_file(file_path) {
+            Ok(hash) => hash,
+            Err(e) => {
+                tracing::warn!("Skipping {file_path}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        let stored = get_file_hash(db, project, file_path)?;
+        if stored.as_deref() == Some(hash.as_str()) {
+            unchanged.push(file_path);
             continue;
         }
-
-        match index_single_file(db, registry, project, file_path) {
-            Ok(()) => indexed += 1,
+        let parsed = match parse_file(registry, file_path) {
+            Ok(parsed) => parsed,
             Err(e) => {
-                tracing::warn!("Failed to index {file_path}: {e}");
+                tracing::warn!("Skipping {file_path}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        upsert_file(
+            db,
+            project,
+            file_path,
+            &parsed.language,
+            &parsed.symbols,
+            &hash,
+        )?;
+        replace_imports(db, project, file_path, &parsed.imports)?;
+        added |= stored.is_none();
+        reparsed.push(file_path.clone());
+    }
+
+    // An import resolves against the files that exist, so a file appearing or
+    // disappearing changes the edges of importers whose own content did not
+    // change. Which importers is not recorded (an unresolved import stores no
+    // edge), so all of them are resolved again.
+    if added || !removed.is_empty() {
+        for file_path in &unchanged {
+            match parse_file(registry, file_path) {
+                Ok(parsed) => replace_imports(db, project, file_path, &parsed.imports)?,
+                Err(e) => tracing::warn!("Could not resolve the imports of {file_path}: {e}"),
             }
         }
     }
 
-    Ok((indexed, removed))
-}
-
-// ============================================================================
-// Single file index
-// ============================================================================
-
-pub fn index_single_file(
-    db: &Db,
-    registry: &LanguageRegistry,
-    project: &str,
-    file_path: &str,
-) -> Result<(), String> {
-    let hash = hash_file(file_path)?;
-
-    if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path) {
-        if existing_hash == hash {
-            return Ok(());
-        }
-    }
-
-    let result = parse_file(registry, file_path)?;
-    upsert_file(
-        db,
-        project,
-        file_path,
-        &result.language,
-        &result.symbols,
-        &hash,
-    )?;
-    replace_imports(db, project, file_path, &result.imports)?;
-    Ok(())
+    Ok(Reconciled {
+        changes: Changes { reparsed, removed },
+        unchanged: unchanged.len(),
+        failed,
+    })
 }
 
 // ============================================================================

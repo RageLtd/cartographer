@@ -174,3 +174,6 @@ fn the_index_survives_closing_and_reopening_the_store_file() {
 
     assert_eq!(answers(&db, &project), expected_answers());
 }
+
+#[path = "indexer_reconcile_tests.rs"]
+mod reconcile;
