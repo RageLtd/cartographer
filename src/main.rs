@@ -7,6 +7,8 @@ mod hooks;
 mod indexer;
 mod parse_cli;
 mod parser;
+#[cfg(test)]
+mod project_fixture_tests;
 mod server;
 mod server_types;
 mod types;
@@ -29,9 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let parse_only_flag = args.iter().any(|a| a == "--parse-only");
-    // Without the `surrealdb` feature there is no storage backend to connect to.
-    let parse_only = parse_only_flag || !cfg!(feature = "surrealdb");
+    let parse_only = args.iter().any(|a| a == "--parse-only");
 
     // MCP server mode
     tracing_subscriber::fmt()
@@ -46,11 +46,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if parse_only {
         // Parse-only mode: no DB connection required. Parsing tools work,
         // query/search/stats tools return errors. mimir-acp handles storage.
-        if !parse_only_flag {
-            tracing::info!(
-                "Built without the `surrealdb` feature; parse-only mode is the only mode"
-            );
-        }
         tracing::info!("Cartographer MCP server starting in parse-only mode (no DB)");
         let server = CartographerServer::parse_only(registry);
         let service = server.serve(rmcp::transport::io::stdio()).await?;
@@ -58,9 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Full mode: connect to SurrealDB for parsing + storage + queries.
-    let db = connect().await.map_err(|e| {
-        eprintln!("Failed to connect to SurrealDB: {e}");
+    // Full mode: open the store for parsing + storage + queries.
+    let db = connect().map_err(|e| {
+        eprintln!("Failed to open the Cartographer store: {e}");
         e
     })?;
 

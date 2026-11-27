@@ -15,7 +15,7 @@ pub fn run(args: &[String]) -> bool {
         "hook:post-compact" => hooks::hook_post_compact(),
         _ => {
             eprintln!("Unknown command: {command}");
-            eprintln!("Usage: cartographer                  # Start MCP server (full mode, needs SurrealDB)");
+            eprintln!("Usage: cartographer                  # Start MCP server (full mode, store in ~/.cartographer)");
             eprintln!("       cartographer --parse-only      # Start MCP server (parse-only, no DB required)");
             eprintln!("       cartographer grammars           # List built-in and host grammars; validate ~/.cartographer/grammars");
             eprintln!("       cartographer parse <file>       # Parse one file and print its imports and symbols as JSON");

@@ -47,24 +47,18 @@ impl CartographerServer {
 
         // Store in DB if available (full mode); skip in parse-only mode.
         if let Some(db) = &self.db {
-            self.run_async(async {
-                upsert_file(
-                    db,
-                    &input.project,
-                    &input.file_path,
-                    &result.language,
-                    &result.symbols,
-                    &hash,
-                )
-                .await
+            upsert_file(
+                db,
+                &input.project,
+                &input.file_path,
+                &result.language,
+                &result.symbols,
+                &hash,
+            )
+            .map_err(|e| McpError::internal_error(e, None))?;
+
+            replace_imports(db, &input.project, &input.file_path, &result.imports)
                 .map_err(|e| McpError::internal_error(e, None))?;
-
-                replace_imports(db, &input.project, &input.file_path, &result.imports)
-                    .await
-                    .map_err(|e| McpError::internal_error(e, None))?;
-
-                Ok::<_, McpError>(())
-            })?;
         }
 
         #[derive(serde::Serialize)]
@@ -115,8 +109,7 @@ impl CartographerServer {
     ) -> Result<CallToolResult, McpError> {
         // Get last known status from DB (or empty if parse-only)
         let last_status = match &self.db {
-            Some(db) => self
-                .run_async(get_last_git_status(db, &input.project))
+            Some(db) => get_last_git_status(db, &input.project)
                 .map_err(|e| McpError::internal_error(e, None))?,
             None => HashMap::new(),
         };
@@ -126,7 +119,7 @@ impl CartographerServer {
 
         if modified.is_empty() && deleted.is_empty() {
             if let Some(db) = &self.db {
-                self.run_async(save_git_status(db, &input.project, &current_status))
+                save_git_status(db, &input.project, &current_status)
                     .map_err(|e| McpError::internal_error(e, None))?;
             }
             return Ok(CallToolResult::success(vec![Content::text(
@@ -138,16 +131,10 @@ impl CartographerServer {
         // In parse-only mode, just parse modified files and report.
         let (indexed, removed) = match &self.db {
             Some(db) => {
-                let result = self
-                    .run_async(incremental_index(
-                        db,
-                        &self.registry,
-                        &input.project,
-                        &modified,
-                        &deleted,
-                    ))
-                    .map_err(|e| McpError::internal_error(e, None))?;
-                self.run_async(save_git_status(db, &input.project, &current_status))
+                let result =
+                    incremental_index(db, &self.registry, &input.project, &modified, &deleted)
+                        .map_err(|e| McpError::internal_error(e, None))?;
+                save_git_status(db, &input.project, &current_status)
                     .map_err(|e| McpError::internal_error(e, None))?;
                 result
             }
@@ -194,14 +181,9 @@ impl CartographerServer {
     ) -> Result<CallToolResult, McpError> {
         match &self.db {
             Some(db) => {
-                let (indexed, skipped) = self
-                    .run_async(full_index(
-                        db,
-                        &self.registry,
-                        &input.project,
-                        &input.project,
-                    ))
-                    .map_err(|e| McpError::internal_error(e, None))?;
+                let (indexed, skipped) =
+                    full_index(db, &self.registry, &input.project, &input.project)
+                        .map_err(|e| McpError::internal_error(e, None))?;
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Indexed {indexed} files ({skipped} skipped)."
                 ))]))

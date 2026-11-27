@@ -1,10 +1,10 @@
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::Command;
 
 use sonic_rs::JsonValueTrait;
-use tokio::runtime::Runtime;
 
-use crate::db::client::{connect, Db};
+use crate::db::client::{open, store_path, Db};
 use crate::db::graph::{get_file_detail, FileDetail};
 use crate::db::queries::{find_files_by_suffix, get_file_count, get_import_count};
 
@@ -65,16 +65,10 @@ fn run_hook(handler: impl FnOnce(HookInput) -> Option<(&'static str, String)>) {
     }
 }
 
-fn open_db() -> Option<Db> {
-    let rt = Runtime::new().ok()?;
-    rt.block_on(connect()).ok()
-}
-
-fn require_indexed_db(cwd: &str) -> Option<(Db, Runtime)> {
-    let rt = Runtime::new().ok()?;
-    let db = rt.block_on(connect()).ok()?;
-    let count = rt.block_on(get_file_count(&db, cwd)).unwrap_or(0);
-    (count > 0).then_some((db, rt))
+fn require_indexed_db(store: &Path, cwd: &str) -> Option<Db> {
+    let db = open(store).ok()?;
+    let count = get_file_count(&db, cwd).unwrap_or(0);
+    (count > 0).then_some(db)
 }
 
 fn rel_path<'a>(path: &'a str, cwd: &str) -> &'a str {
@@ -100,16 +94,44 @@ fn extract_tool_file_path(input: &HookInput, cwd: &str) -> Option<String> {
     Some(resolve_abs_path(file_path, cwd))
 }
 
-fn lookup_detail(db: &Db, rt: &Runtime, cwd: &str, path: &str) -> Option<FileDetail> {
-    rt.block_on(get_file_detail(db, cwd, path)).ok().flatten()
+fn lookup_detail(db: &Db, cwd: &str, path: &str) -> Option<FileDetail> {
+    get_file_detail(db, cwd, path).ok().flatten()
 }
 
-// --- Hook handlers ---
+// --- Hook entry points: each reads the store under the data directory ---
 
 pub fn hook_context() {
-    run_hook(|input| {
-        let mut context = String::from(
-            "# [cartographer] codebase structure\n\
+    run_hook(|input| match store_path() {
+        Ok(store) => session_start(&store, input),
+        Err(_) => Some((SESSION_START_EVENT, SESSION_GUIDANCE.to_string())),
+    });
+}
+
+pub fn hook_prompt() {
+    run_hook(|input| prompt_submit(&store_path().ok()?, input));
+}
+
+pub fn hook_pre_read() {
+    run_hook(|input| file_tool(&store_path().ok()?, input, "Reading"));
+}
+
+pub fn hook_pre_edit() {
+    run_hook(|input| file_tool(&store_path().ok()?, input, "Editing"));
+}
+
+pub fn hook_post_edit() {
+    run_hook(|input| post_edit(&store_path().ok()?, input));
+}
+
+pub fn hook_post_compact() {
+    run_hook(|input| post_compact(&store_path().ok()?, input));
+}
+
+// --- Hook handlers, answering from the store file at `store` ---
+
+const SESSION_START_EVENT: &str = "SessionStart";
+
+const SESSION_GUIDANCE: &str = "# [cartographer] codebase structure\n\
              \n\
              ## Graph-First Navigation\n\
              \n\
@@ -129,139 +151,121 @@ pub fn hook_context() {
              ## When Grep/Glob is Still Better\n\
              - Searching for specific error messages or string literals\n\
              - Finding TODO/FIXME comments\n\
-             - Pattern matching across file contents (not structure)",
-        );
+             - Pattern matching across file contents (not structure)";
 
-        if let Some(db) = open_db() {
-            let cwd = &input.cwd;
-            if !cwd.is_empty() {
-                let rt = Runtime::new().ok()?;
-                let file_count = rt.block_on(get_file_count(&db, cwd)).unwrap_or(0);
-                if file_count == 0 {
-                    context.push_str(&format!(
-                        "\n\n## Index Status\n\
-                         - Project not yet indexed. Run `cartographer_index_project` with project path `{cwd}` to build the import graph."
-                    ));
-                } else {
-                    let import_count = rt.block_on(get_import_count(&db, cwd)).unwrap_or(0);
-                    context.push_str(&format!(
-                        "\n\n## Index Status\n\
-                         - **Project**: {cwd}\n\
-                         - **Files indexed**: {file_count}\n\
-                         - **Import edges**: {import_count}\n\
-                         - Run `cartographer_detect_changes` if files have changed since last index",
-                    ));
-                }
+fn session_start(store: &Path, input: HookInput) -> Option<(&'static str, String)> {
+    let mut context = String::from(SESSION_GUIDANCE);
+
+    if let Ok(db) = open(store) {
+        let cwd = &input.cwd;
+        if !cwd.is_empty() {
+            let file_count = get_file_count(&db, cwd).unwrap_or(0);
+            if file_count == 0 {
+                context.push_str(&format!(
+                    "\n\n## Index Status\n\
+                     - Project not yet indexed. Run `cartographer_index_project` with project path `{cwd}` to build the import graph."
+                ));
+            } else {
+                let import_count = get_import_count(&db, cwd).unwrap_or(0);
+                context.push_str(&format!(
+                    "\n\n## Index Status\n\
+                     - **Project**: {cwd}\n\
+                     - **Files indexed**: {file_count}\n\
+                     - **Import edges**: {import_count}\n\
+                     - Run `cartographer_detect_changes` if files have changed since last index",
+                ));
             }
         }
+    }
 
-        Some(("SessionStart", context))
-    });
+    Some((SESSION_START_EVENT, context))
 }
 
-pub fn hook_prompt() {
-    run_hook(|input| {
-        let prompt = input.prompt.as_deref().filter(|p| !p.is_empty())?;
-        let cwd = &input.cwd;
-        let (db, rt) = require_indexed_db(cwd)?;
+fn prompt_submit(store: &Path, input: HookInput) -> Option<(&'static str, String)> {
+    let prompt = input.prompt.as_deref().filter(|p| !p.is_empty())?;
+    let cwd = &input.cwd;
+    let db = require_indexed_db(store, cwd)?;
 
-        let file_mentions = extract_file_mentions(prompt);
-        let context_parts: Vec<String> = file_mentions
-            .iter()
-            .flat_map(|mention| {
-                rt.block_on(find_files_by_suffix(
-                    &db,
-                    cwd,
-                    mention,
-                    FILE_MENTION_MATCH_LIMIT,
-                ))
-                .unwrap_or_default()
-            })
-            .filter_map(|path| {
-                let detail = lookup_detail(&db, &rt, cwd, &path)?;
-                format_prompt_file_context(cwd, &detail)
-            })
-            .collect();
-
-        (!context_parts.is_empty()).then(|| {
-            (
-                "UserPromptSubmit",
-                format!(
-                    "## Relevant files\n{}\n\nUse `cartographer_query` for deeper dependency analysis.",
-                    context_parts.join("\n")
-                ),
-            )
+    let file_mentions = extract_file_mentions(prompt);
+    let context_parts: Vec<String> = file_mentions
+        .iter()
+        .flat_map(|mention| {
+            find_files_by_suffix(&db, cwd, mention, FILE_MENTION_MATCH_LIMIT).unwrap_or_default()
         })
-    });
-}
-
-pub fn hook_pre_read() {
-    hook_file_tool("Reading");
-}
-
-pub fn hook_pre_edit() {
-    hook_file_tool("Editing");
-}
-
-fn hook_file_tool(action: &'static str) {
-    run_hook(|input| {
-        let cwd = &input.cwd;
-        let file_path = extract_tool_file_path(&input, cwd)?;
-        let (db, rt) = require_indexed_db(cwd)?;
-        let detail = lookup_detail(&db, &rt, cwd, &file_path)?;
-        let ctx = format_tool_file_context(cwd, &detail, action)?;
-        Some(("PreToolUse", ctx))
-    });
-}
-
-pub fn hook_post_edit() {
-    run_hook(|input| {
-        let cwd = &input.cwd;
-        let (db, rt) = require_indexed_db(cwd)?;
-        let changed_files = git_changed_files(cwd);
-
-        let lines: Vec<String> = changed_files
-            .iter()
-            .map(|(added, removed, file)| {
-                let abs_path = resolve_abs_path(file, cwd);
-                let dep_count =
-                    lookup_detail(&db, &rt, cwd, &abs_path).map_or(0, |d| d.dependents.len());
-                let suffix = if dep_count > 0 {
-                    format!(" — {dep_count} dependents")
-                } else {
-                    String::new()
-                };
-                format!("- `{file}` (+{added}/-{removed}){suffix}")
-            })
-            .collect();
-
-        (!lines.is_empty()).then(|| {
-            (
-                "PostToolUse",
-                format!(
-                    "## [cartographer] Modified files\n{}\n\nRun `cartographer_detect_changes` to update the import graph.",
-                    lines.join("\n")
-                ),
-            )
+        .filter_map(|path| {
+            let detail = lookup_detail(&db, cwd, &path)?;
+            format_prompt_file_context(cwd, &detail)
         })
-    });
+        .collect();
+
+    (!context_parts.is_empty()).then(|| {
+        (
+            "UserPromptSubmit",
+            format!(
+                "## Relevant files\n{}\n\nUse `cartographer_query` for deeper dependency analysis.",
+                context_parts.join("\n")
+            ),
+        )
+    })
 }
 
-pub fn hook_post_compact() {
-    run_hook(|input| {
-        let cwd = &input.cwd;
-        let (db, rt) = require_indexed_db(cwd)?;
+fn file_tool(
+    store: &Path,
+    input: HookInput,
+    action: &'static str,
+) -> Option<(&'static str, String)> {
+    let cwd = &input.cwd;
+    let file_path = extract_tool_file_path(&input, cwd)?;
+    let db = require_indexed_db(store, cwd)?;
+    let detail = lookup_detail(&db, cwd, &file_path)?;
+    let ctx = format_tool_file_context(cwd, &detail, action)?;
+    Some(("PreToolUse", ctx))
+}
 
-        let parts: Vec<String> = git_changed_files(cwd)
-            .iter()
-            .filter_map(|(added, removed, file)| {
-                let abs_path = resolve_abs_path(file, cwd);
-                let detail = lookup_detail(&db, &rt, cwd, &abs_path)?;
-                Some(format_compact_file_context(cwd, &detail, added, removed))
-            })
-            .collect();
+fn post_edit(store: &Path, input: HookInput) -> Option<(&'static str, String)> {
+    let cwd = &input.cwd;
+    let db = require_indexed_db(store, cwd)?;
+    let changed_files = git_changed_files(cwd);
 
-        (!parts.is_empty()).then(|| {
+    let lines: Vec<String> = changed_files
+        .iter()
+        .map(|(added, removed, file)| {
+            let abs_path = resolve_abs_path(file, cwd);
+            let dep_count = lookup_detail(&db, cwd, &abs_path).map_or(0, |d| d.dependents.len());
+            let suffix = if dep_count > 0 {
+                format!(" — {dep_count} dependents")
+            } else {
+                String::new()
+            };
+            format!("- `{file}` (+{added}/-{removed}){suffix}")
+        })
+        .collect();
+
+    (!lines.is_empty()).then(|| {
+        (
+            "PostToolUse",
+            format!(
+                "## [cartographer] Modified files\n{}\n\nRun `cartographer_detect_changes` to update the import graph.",
+                lines.join("\n")
+            ),
+        )
+    })
+}
+
+fn post_compact(store: &Path, input: HookInput) -> Option<(&'static str, String)> {
+    let cwd = &input.cwd;
+    let db = require_indexed_db(store, cwd)?;
+
+    let parts: Vec<String> = git_changed_files(cwd)
+        .iter()
+        .filter_map(|(added, removed, file)| {
+            let abs_path = resolve_abs_path(file, cwd);
+            let detail = lookup_detail(&db, cwd, &abs_path)?;
+            Some(format_compact_file_context(cwd, &detail, added, removed))
+        })
+        .collect();
+
+    (!parts.is_empty()).then(|| {
             (
                 "PostCompact",
                 format!(
@@ -276,7 +280,6 @@ pub fn hook_post_compact() {
                 ),
             )
         })
-    });
 }
 
 // --- Formatting helpers ---
@@ -459,38 +462,5 @@ fn extract_file_mentions(text: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_file_mentions_basic() {
-        let mentions = extract_file_mentions("look at src/main.rs and src/server.rs");
-        assert!(mentions.contains(&"src/main.rs".to_string()));
-        assert!(mentions.contains(&"src/server.rs".to_string()));
-    }
-
-    #[test]
-    fn test_extract_file_mentions_backticks() {
-        let mentions = extract_file_mentions("check `src/parser/mod.rs` for the issue");
-        assert!(mentions.contains(&"src/parser/mod.rs".to_string()));
-    }
-
-    #[test]
-    fn test_extract_file_mentions_no_false_positives() {
-        let mentions = extract_file_mentions("the version is 1.2.3 and we should upgrade");
-        assert!(mentions.is_empty());
-    }
-
-    #[test]
-    fn test_extract_file_mentions_typescript() {
-        let mentions = extract_file_mentions("update components/Button.tsx and utils/helpers.ts");
-        assert!(mentions.contains(&"components/Button.tsx".to_string()));
-        assert!(mentions.contains(&"utils/helpers.ts".to_string()));
-    }
-
-    #[test]
-    fn test_extract_file_mentions_dedup() {
-        let mentions = extract_file_mentions("src/main.rs and src/main.rs again");
-        assert_eq!(mentions.len(), 1);
-    }
-}
+#[path = "hooks_tests.rs"]
+mod tests;

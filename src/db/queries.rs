@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use surrealdb_types::SurrealValue;
+use rusqlite::{params, OptionalExtension};
 
 use super::client::Db;
+use super::search_words::search_words;
 use crate::types::{ImportEdge, Symbol};
+
+const EMPTY_JSON_ARRAY: &str = "[]";
 
 fn epoch_ms() -> i64 {
     SystemTime::now()
@@ -17,7 +20,7 @@ fn epoch_ms() -> i64 {
 // File operations
 // ============================================================================
 
-pub async fn upsert_file(
+pub fn upsert_file(
     db: &Db,
     project: &str,
     file_path: &str,
@@ -25,111 +28,135 @@ pub async fn upsert_file(
     symbols: &[Symbol],
     content_hash: &str,
 ) -> Result<(), String> {
-    let symbols_json = sonic_rs::to_string(symbols).unwrap_or_else(|_| "[]".to_string());
-    let symbol_names: String = symbols
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let searchable = format!("{file_path} {symbol_names}");
+    let symbols_json =
+        sonic_rs::to_string(symbols).unwrap_or_else(|_| EMPTY_JSON_ARRAY.to_string());
+    let mut words = search_words(file_path);
+    for symbol in symbols {
+        words.extend(search_words(&symbol.name));
+    }
+    let searchable = words.join(" ");
     let now = epoch_ms();
 
-    db.query(
-        "DELETE cart_file WHERE project = $project AND file_path = $file_path;
-         CREATE cart_file SET
-            project = $project,
-            file_path = $file_path,
-            language = $language,
-            symbols = $symbols,
-            symbol_names = $symbol_names,
-            searchable = $searchable,
-            content_hash = $content_hash,
-            last_parsed_epoch = $now",
-    )
-    .bind(("project", project.to_string()))
-    .bind(("file_path", file_path.to_string()))
-    .bind(("language", language.to_string()))
-    .bind(("symbols", symbols_json))
-    .bind(("symbol_names", symbol_names))
-    .bind(("searchable", searchable))
-    .bind(("content_hash", content_hash.to_string()))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to upsert file {file_path}: {e}"))?;
-
-    Ok(())
+    db.write(&format!("Failed to upsert file {file_path}"), |tx| {
+        let id: i64 = tx.query_row(
+            "INSERT INTO files
+                (project, file_path, language, symbols, content_hash, last_parsed_epoch)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (project, file_path) DO UPDATE SET
+                language = excluded.language,
+                symbols = excluded.symbols,
+                content_hash = excluded.content_hash,
+                last_parsed_epoch = excluded.last_parsed_epoch
+             RETURNING id",
+            params![
+                project,
+                file_path,
+                language,
+                symbols_json,
+                content_hash,
+                now
+            ],
+            |row| row.get(0),
+        )?;
+        tx.execute("DELETE FROM file_search WHERE rowid = ?1", [id])?;
+        tx.execute(
+            "INSERT INTO file_search (rowid, searchable) VALUES (?1, ?2)",
+            params![id, searchable],
+        )?;
+        Ok(())
+    })
 }
 
-pub async fn get_file_hash(
-    db: &Db,
-    project: &str,
-    file_path: &str,
-) -> Result<Option<String>, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        content_hash: String,
-    }
-
-    let mut result = db
-        .query("SELECT content_hash FROM cart_file WHERE project = $project AND file_path = $file_path LIMIT 1")
-        .bind(("project", project.to_string()))
-        .bind(("file_path", file_path.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(row.map(|r| r.content_hash))
+pub fn get_file_hash(db: &Db, project: &str, file_path: &str) -> Result<Option<String>, String> {
+    db.read(&format!("Failed to read the hash of {file_path}"), |conn| {
+        conn.query_row(
+            "SELECT content_hash FROM files WHERE project = ?1 AND file_path = ?2",
+            [project, file_path],
+            |row| row.get(0),
+        )
+        .optional()
+    })
 }
 
-pub async fn remove_file(db: &Db, project: &str, file_path: &str) -> Result<(), String> {
-    db.query(
-        "DELETE cart_file WHERE project = $project AND file_path = $file_path;
-         DELETE cart_import WHERE project = $project AND (source_path = $file_path OR target_path = $file_path)",
-    )
-    .bind(("project", project.to_string()))
-    .bind(("file_path", file_path.to_string()))
-    .await
-    .map_err(|e| format!("Failed to remove file {file_path}: {e}"))?;
-
-    Ok(())
+pub fn remove_file(db: &Db, project: &str, file_path: &str) -> Result<(), String> {
+    db.write(&format!("Failed to remove file {file_path}"), |tx| {
+        tx.execute(
+            "DELETE FROM file_search WHERE rowid IN
+                (SELECT id FROM files WHERE project = ?1 AND file_path = ?2)",
+            [project, file_path],
+        )?;
+        tx.execute(
+            "DELETE FROM files WHERE project = ?1 AND file_path = ?2",
+            [project, file_path],
+        )?;
+        tx.execute(
+            "DELETE FROM imports
+             WHERE project = ?1 AND (source_path = ?2 OR target_path = ?2)",
+            [project, file_path],
+        )?;
+        Ok(())
+    })
 }
 
-pub async fn replace_imports(
+pub fn replace_imports(
     db: &Db,
     project: &str,
     source_path: &str,
     edges: &[ImportEdge],
 ) -> Result<(), String> {
     let now = epoch_ms();
+    let edges = merge_duplicate_edges(edges);
 
-    db.query("DELETE cart_import WHERE project = $project AND source_path = $source_path")
-        .bind(("project", project.to_string()))
-        .bind(("source_path", source_path.to_string()))
-        .await
-        .map_err(|e| format!("Failed to delete old imports: {e}"))?;
+    db.write(
+        &format!("Failed to replace the imports of {source_path}"),
+        |tx| {
+            tx.execute(
+                "DELETE FROM imports WHERE project = ?1 AND source_path = ?2",
+                [project, source_path],
+            )?;
+            let mut insert = tx.prepare(
+                "INSERT INTO imports
+                    (project, source_path, target_path, specifier, symbols, updated_at_epoch)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for edge in &edges {
+                let symbols_json = sonic_rs::to_string(&edge.symbols)
+                    .unwrap_or_else(|_| EMPTY_JSON_ARRAY.to_string());
+                insert.execute(params![
+                    project,
+                    edge.source,
+                    edge.target,
+                    edge.specifier,
+                    symbols_json,
+                    now
+                ])?;
+            }
+            Ok(())
+        },
+    )
+}
 
+/// One edge per source, target and specifier, carrying the symbols of every
+/// declaration that produced it: `import type { A } from "./b"` and
+/// `import { b } from "./b"` are one edge.
+fn merge_duplicate_edges(edges: &[ImportEdge]) -> Vec<ImportEdge> {
+    let mut merged: Vec<ImportEdge> = Vec::new();
     for edge in edges {
-        let symbols_json = sonic_rs::to_string(&edge.symbols).unwrap_or_else(|_| "[]".to_string());
-        db.query(
-            "CREATE cart_import SET
-                project = $project,
-                source_path = $source_path,
-                target_path = $target_path,
-                specifier = $specifier,
-                symbols = $symbols,
-                updated_at_epoch = $now",
-        )
-        .bind(("project", project.to_string()))
-        .bind(("source_path", edge.source.clone()))
-        .bind(("target_path", edge.target.clone()))
-        .bind(("specifier", edge.specifier.clone()))
-        .bind(("symbols", symbols_json))
-        .bind(("now", now))
-        .await
-        .map_err(|e| format!("Failed to insert import edge: {e}"))?;
+        let existing = merged.iter_mut().find(|m| {
+            m.source == edge.source && m.target == edge.target && m.specifier == edge.specifier
+        });
+        match existing {
+            Some(m) => {
+                for symbol in &edge.symbols {
+                    if !m.symbols.contains(symbol) {
+                        m.symbols.push(symbol.clone());
+                    }
+                }
+            }
+            None => merged.push(edge.clone()),
+        }
     }
-
-    Ok(())
+    merged
 }
 
 // ============================================================================
@@ -138,127 +165,93 @@ pub async fn replace_imports(
 
 /// Indexed files in `project` whose path ends with `suffix` — resolves bare
 /// file mentions such as `auth.rs` to full paths.
-pub async fn find_files_by_suffix(
+pub fn find_files_by_suffix(
     db: &Db,
     project: &str,
     suffix: &str,
     limit: i64,
 ) -> Result<Vec<String>, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        file_path: String,
-    }
+    // GLOB rather than LIKE: it is case-sensitive, like paths.
+    let pattern = format!("*{}", glob_literal(suffix));
+    db.read(
+        &format!("Failed to search files by suffix {suffix:?}"),
+        |conn| {
+            conn.prepare(
+                "SELECT file_path FROM files WHERE project = ?1 AND file_path GLOB ?2 LIMIT ?3",
+            )?
+            .query_map(params![project, pattern, limit], |row| row.get(0))?
+            .collect()
+        },
+    )
+}
 
-    let mut result = db
-        .query(
-            "SELECT file_path FROM cart_file WHERE project = $project AND file_path LIKE $pattern LIMIT $limit",
+/// `text` as a GLOB pattern that matches only itself.
+fn glob_literal(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '*' | '?' | '[' => format!("[{c}]"),
+            _ => c.to_string(),
+        })
+        .collect()
+}
+
+pub fn get_file_count(db: &Db, project: &str) -> Result<i64, String> {
+    db.read("Failed to count files", |conn| {
+        conn.query_row(
+            "SELECT count(*) FROM files WHERE project = ?1",
+            [project],
+            |row| row.get(0),
         )
-        .bind(("project", project.to_string()))
-        .bind(("pattern", format!("%{suffix}")))
-        .bind(("limit", limit))
-        .await
-        .map_err(|e| format!("Failed to search files by suffix {suffix:?}: {e}"))?;
-
-    let rows: Vec<Row> = result
-        .take(0)
-        .map_err(|e| format!("Failed to read suffix search results: {e}"))?;
-    Ok(rows.into_iter().map(|r| r.file_path).collect())
+    })
 }
 
-pub async fn get_file_count(db: &Db, project: &str) -> Result<i64, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        count: i64,
-    }
-
-    let mut result = db
-        .query("SELECT count() as count FROM cart_file WHERE project = $project GROUP ALL")
-        .bind(("project", project.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(row.map(|r| r.count).unwrap_or(0))
+pub fn get_language_counts(db: &Db, project: &str) -> Result<HashMap<String, usize>, String> {
+    db.read("Failed to count files by language", |conn| {
+        conn.prepare("SELECT language, count(*) FROM files WHERE project = ?1 GROUP BY language")?
+            .query_map([project], |row| {
+                Ok((row.get(0)?, row.get::<_, i64>(1)? as usize))
+            })?
+            .collect()
+    })
 }
 
-pub async fn get_language_counts(db: &Db, project: &str) -> Result<HashMap<String, usize>, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        language: String,
-        count: i64,
-    }
-
-    let mut result = db
-        .query("SELECT language, count() as count FROM cart_file WHERE project = $project GROUP BY language")
-        .bind(("project", project.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(|r| (r.language, r.count as usize))
-        .collect())
+pub fn get_import_count(db: &Db, project: &str) -> Result<i64, String> {
+    db.read("Failed to count imports", |conn| {
+        conn.query_row(
+            "SELECT count(*) FROM imports WHERE project = ?1",
+            [project],
+            |row| row.get(0),
+        )
+    })
 }
 
-pub async fn get_import_count(db: &Db, project: &str) -> Result<i64, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        count: i64,
-    }
-
-    let mut result = db
-        .query("SELECT count() as count FROM cart_import WHERE project = $project GROUP ALL")
-        .bind(("project", project.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(row.map(|r| r.count).unwrap_or(0))
-}
-
-pub async fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        project: String,
-        count: i64,
-    }
-
-    let mut result = db
-        .query("SELECT project, count() as count FROM cart_file GROUP BY project")
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let rows: Vec<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().map(|r| (r.project, r.count)).collect())
+pub fn get_project_stats(db: &Db) -> Result<Vec<(String, i64)>, String> {
+    db.read("Failed to count files by project", |conn| {
+        conn.prepare("SELECT project, count(*) FROM files GROUP BY project")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    })
 }
 
 // ============================================================================
 // Git state tracking
 // ============================================================================
 
-pub async fn get_last_git_status(
-    db: &Db,
-    project: &str,
-) -> Result<HashMap<String, String>, String> {
-    #[derive(SurrealValue)]
-    struct Row {
-        last_status: String,
-    }
-
-    let mut result = db
-        .query("SELECT last_status FROM cart_git_state WHERE project = $project LIMIT 1")
-        .bind(("project", project.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let row: Option<Row> = result.take(0).map_err(|e| e.to_string())?;
-    Ok(row
-        .and_then(|r| sonic_rs::from_str(&r.last_status).ok())
+pub fn get_last_git_status(db: &Db, project: &str) -> Result<HashMap<String, String>, String> {
+    let status: Option<String> = db.read("Failed to read the saved git status", |conn| {
+        conn.query_row(
+            "SELECT last_status FROM git_state WHERE project = ?1",
+            [project],
+            |row| row.get(0),
+        )
+        .optional()
+    })?;
+    Ok(status
+        .and_then(|s| sonic_rs::from_str(&s).ok())
         .unwrap_or_default())
 }
 
-pub async fn save_git_status(
+pub fn save_git_status(
     db: &Db,
     project: &str,
     status: &HashMap<String, String>,
@@ -266,18 +259,19 @@ pub async fn save_git_status(
     let json = sonic_rs::to_string(status).unwrap_or_else(|_| "{}".to_string());
     let now = epoch_ms();
 
-    db.query(
-        "DELETE cart_git_state WHERE project = $project;
-         CREATE cart_git_state SET
-            project = $project,
-            last_status = $json,
-            updated_at_epoch = $now",
-    )
-    .bind(("project", project.to_string()))
-    .bind(("json", json))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to save git status: {e}"))?;
-
-    Ok(())
+    db.write("Failed to save git status", |tx| {
+        tx.execute(
+            "INSERT INTO git_state (project, last_status, updated_at_epoch)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (project) DO UPDATE SET
+                last_status = excluded.last_status,
+                updated_at_epoch = excluded.updated_at_epoch",
+            params![project, json, now],
+        )?;
+        Ok(())
+    })
 }
+
+#[cfg(test)]
+#[path = "queries_tests.rs"]
+mod tests;

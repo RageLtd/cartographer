@@ -42,9 +42,7 @@ impl ServerHandler for CartographerServer {
             let db = self.db.as_ref().ok_or_else(|| {
                 McpError::internal_error("Resource not available in parse-only mode.", None)
             })?;
-            let stats = get_project_stats(db)
-                .await
-                .map_err(|e| McpError::internal_error(e, None))?;
+            let stats = get_project_stats(db).map_err(|e| McpError::internal_error(e, None))?;
 
             #[derive(serde::Serialize)]
             struct ProjectRow {

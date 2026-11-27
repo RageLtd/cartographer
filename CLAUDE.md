@@ -4,21 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Cartographer is an MCP server that builds an import graph of codebases using Tree-sitter AST parsing. It stores file metadata and import edges in SurrealDB (behind the default `surrealdb` feature), then answers graph queries with a breadth-first walk over the import edges. Built without the feature, it is a pure parser that runs in `--parse-only` mode. Designed as a companion to [Goldfish](https://github.com/RageLtd/Goldfish) — Goldfish remembers what you *did*, Cartographer maps what *exists*.
+Cartographer is an MCP server that builds an import graph of codebases using Tree-sitter AST parsing. It stores file metadata and import edges in an embedded SQLite file under the data directory, then answers graph queries with a breadth-first walk over the import edges. Started with `--parse-only`, it is a pure parser that never opens the store. Designed as a companion to [Goldfish](https://github.com/RageLtd/Goldfish) — Goldfish remembers what you *did*, Cartographer maps what *exists*.
 
 ## Commands
 
 ```bash
 cargo build              # Build (debug)
 cargo build --release    # Build (release)
-cargo build --no-default-features   # Parse-only binary: no SurrealDB dependency, storage tools report unavailable
-cargo test --no-default-features    # Must pass too — CI checks both configurations
 cargo run                # Run MCP server (stdio transport)
+cargo run -- --parse-only   # Run MCP server without opening the store (parsing tools only)
 cargo run -- grammars    # List built-in + host grammars; validate ~/.cartographer/grammars (exit 1 on a broken grammar)
 cargo run -- parse <file>   # Parse one file through the registry and print the JSON result (smoke test for a new grammar)
 cargo test               # Run all tests
 cargo check              # Type-check without building
-cargo clippy             # Lint (must pass with zero warnings)
+cargo clippy --all-targets -- -D warnings   # Lint, as CI runs it (must pass with zero warnings)
 cargo fmt                # Format code
 ```
 
@@ -36,11 +35,11 @@ Agent query → db/graph.rs (graph walk) → RelevantFile[]
 
 ### Module Layout
 
-- **`src/main.rs`** — Entry point. Delegates CLI subcommands to `cli::run()` or starts the MCP server on stdio. Builds the `LanguageRegistry` (built-in + host grammars) via `grammars.rs`, connects to the DB unless `--parse-only`.
+- **`src/main.rs`** — Entry point. Delegates CLI subcommands to `cli::run()` or starts the MCP server on stdio. Builds the `LanguageRegistry` (built-in + host grammars) via `grammars.rs`, opens the store unless `--parse-only`.
 - **`src/cli.rs`** — Thin CLI dispatcher over `args[1..]`. Routes `grammars` to `grammars::run_cli()`, `parse <file>` to `parse_cli::run_cli()`, and hook subcommands (`hook:context`, `hook:prompt`, `hook:pre-read`, `hook:pre-edit`, `hook:post-edit`, `hook:post-compact`) to handlers in `hooks.rs`.
 - **`src/grammars.rs`** — Assembles the registry (`load_registry()` → `RegistryReport` with failures), logs it for the server (`log_report`), and implements the `grammars` CLI listing/validation (`run_cli`).
 - **`src/parse_cli.rs`** — `cartographer parse <file>`: parses one file through the assembled registry and prints `ParseReport` JSON (camelCase). Exit 1 with the parser's error on failure, 2 on usage.
-- **`src/hooks.rs`** — All 6 hook handlers. `run_hook()` combinator handles stdin parsing and output. `hook_context()` (SessionStart), `hook_prompt()` (UserPromptSubmit file mention lookup), `hook_pre_read()`/`hook_pre_edit()` (PreToolUse graph context injection), `hook_post_edit()` (PostToolUse git diff tracking), `hook_post_compact()` (PostCompact structural context re-injection).
+- **`src/hooks.rs`** — All 6 hook handlers. `run_hook()` combinator handles stdin parsing and output. `hook_context()` (SessionStart), `hook_prompt()` (UserPromptSubmit file mention lookup), `hook_pre_read()`/`hook_pre_edit()` (PreToolUse graph context injection), `hook_post_edit()` (PostToolUse git diff tracking), `hook_post_compact()` (PostCompact structural context re-injection). Each public `hook_*` function passes `store_path()` to a private function holding the hook's body (`session_start`, `prompt_submit`, `file_tool`, `post_edit`, `post_compact`), which opens the store at that path; tests call those with a store in a temporary directory.
 - **`src/server.rs`** — `CartographerServer` state (`db`, `registry: Arc<LanguageRegistry>`) and the combined `tool_router()`. Tools live in per-concern submodules, each with its own `#[tool_router(router = ..., vis = "pub(crate)")]` block summed with `+`:
   - **`src/server/parse_tools.rs`** — `cartographer_parse_file`, `cartographer_detect_changes`, `cartographer_index_project` (the registry-dependent tools).
   - **`src/server/graph_tools.rs`** — `cartographer_query`, `cartographer_stats` (includes loaded grammars), `cartographer_search`, `cartographer_get_file_info`, `cartographer_find_cycles`.
@@ -61,22 +60,24 @@ Agent query → db/graph.rs (graph walk) → RelevantFile[]
 - **`src/parser/elixir.rs`** — Elixir extractor. Handles `defmodule`, `def`/`defp`, `defmacro`/`defmacrop`, `defstruct`, `alias`/`import`/`use`/`require`. Supports `@doc`/`@moduledoc` heredoc comments.
 - **`src/parser/resolver.rs`** — Import specifier resolution. `resolve_ts_js_import()` for relative JS/TS imports. `resolve_rust_mod_decl()` for `mod x;`, looking for `x.rs` then `x/mod.rs` (`rust_modules::child_module_file()`) in the directory `rust_modules::child_module_dir()` picks. `resolve_ruby_require()` for `require_relative`. `resolve_elixir_module()` for Elixir module-to-file mapping via `mix.exs` project root. For host grammars: `ResolverStrategy` (`relative-path` and `module-path`, deserialized from the manifest) and `resolve_with_strategies()`.
 - **`src/indexer.rs`** — `full_index()` walks the file tree (skips unchanged files via content hash); `incremental_index()` re-parses modified files and removes deleted ones. `diff_git_status()` compares against last stored snapshot.
-- **`src/db/mod.rs`** — The feature gate. With `surrealdb` it exposes `client`, `queries`, `graph`, `schema`; without it, `disabled` is re-exported under the same module names.
-- **`src/db/client.rs`** — `Db = Surreal<Client>` and `connect()`: WebSocket connection from `SURREAL_URL` / `SURREAL_USER` / `SURREAL_PASS` / `SURREAL_NS` / `SURREAL_DB` (defaults `localhost:8001`, `root`, `mimir/mimir`), then `init_schema()`.
-- **`src/db/schema.rs`** — Idempotent `DEFINE … IF NOT EXISTS` for three SCHEMAFULL tables: `cart_file`, `cart_import`, `cart_git_state`, their unique indexes, and a BM25 full-text index over `cart_file.searchable`.
-- **`src/db/queries.rs`** — File upsert/remove, content-hash lookup, import edge replacement, suffix lookup for file mentions, stats, git state persistence. Rows deserialize via `#[derive(SurrealValue)]`.
-- **`src/db/graph.rs`** — `walk_import_graph` (BFS over `cart_import`, one query per hop in each direction, bounded by depth and result count), `find_cycles`, `get_file_detail`, and `search_files` (`searchable @1@ $query` ranked by `search::score`).
-- **`src/db/disabled.rs`** — Compiled only without the feature: the same API over an uninhabited `enum Db {}`. `connect()` returns a "built without `surrealdb`" error; every `fn(&Db, …)` body is `match *db {}`, so the compiler proves they can never run. This is why no `#[cfg]` appears outside `src/db/` and `main.rs`.
+- **`src/db/mod.rs`** — The storage layer: `client`, `queries`, `graph`, and the private `schema` and `search_words`.
+- **`src/db/client.rs`** — `Db`, a cloneable handle on one SQLite connection (`Arc<Mutex<Connection>>`). `open(path)` creates the file and its directory, sets a busy timeout and WAL mode, and runs `init_schema()`. `store_path()` is `data_dir()/cartographer.db`; `connect()` opens it. `Db::read` and `Db::write` are the only way queries reach the connection: `write` runs its closure in one `BEGIN IMMEDIATE` transaction, and both return `Err("{what}: {cause}")`.
+- **`src/db/schema.rs`** — Tables `files`, `imports` (primary key `project, source_path, target_path, specifier`; no foreign key to `files`), `git_state`, and the FTS5 table `file_search`, whose rowid is `files.id`. `SCHEMA_VERSION` is kept in `PRAGMA user_version`; a file at any other version has every table dropped and recreated.
+- **`src/db/search_words.rs`** — `search_words(text)`: the runs of letters and of digits in a string. Used for both the stored search text and the query, so the two are always cut the same way.
+- **`src/db/queries.rs`** — File upsert/remove, content-hash lookup, import edge replacement (edges with the same source, target and specifier are merged), suffix lookup for file mentions (`GLOB`, so `_` and `%` are literal and case matters), stats, git state persistence.
+- **`src/db/graph.rs`** — `walk_import_graph` (BFS over `imports`, one query per hop in each direction, bounded by depth and result count), `find_cycles`, `get_file_detail`, and `search_files` (FTS5 `MATCH` requiring every word of the query, ordered by `bm25`).
 - **`src/constants.rs`** — `SKIP_DIRS` lists directories to ignore during indexing. `data_dir()` (`$CARTOGRAPHER_HOME`, else `~/.cartographer`) and `grammars_dir()` for host grammar discovery. Extension → language mapping lives in `parser/registry.rs`, not here.
 - **`src/types.rs`** — Core type definitions: `ImportEdge`, `Symbol`, `SymbolKind`, `Visibility`, `FileParseResult`, `RelevantFile`.
 
 ### Key Design Decisions
 
-- **SurrealDB over WebSocket, raw SurrealQL** — no ORM. The DB is an external server shared with Mimir (`mimir/mimir` namespace by default); Cartographer owns the `cart_*` tables. Tool handlers are synchronous and bridge to the async client through `run_async()` (`block_in_place` + `block_on`).
-- **Storage is a Cargo feature** — `surrealdb` is on by default. `--no-default-features` removes the dependency entirely; the binary then forces `--parse-only` and the `db` module's API is satisfied by uninhabited stubs rather than `#[cfg]` at every call site. Keep it that way: new storage functions get a stub in `db/disabled.rs`, not a `cfg` in the caller. The release workflow builds both variants per platform: `cartographer-<platform>` (full; what `scripts/ensure-binary.sh` downloads) and `cartographer-parse-only-<platform>` (for mimir).
+- **Embedded SQLite, raw SQL** — `rusqlite` with the `bundled` feature, no ORM and no server. One file, `cartographer.db` under the data directory, shared by the MCP server and the short-lived hook processes; WAL mode and a busy timeout let a hook read while the server writes. Storage functions are synchronous, and so are the tool handlers that call them.
+- **The store is a cache, not a record** — everything in it can be rebuilt by indexing. A schema change bumps `SCHEMA_VERSION` and old files are emptied on open; there are no migrations. Bump it too when what is written changes without the tables changing, such as how `search_words` cuts text.
+- **One binary** — there is no storage Cargo feature. `--parse-only` is a run-time flag: the server starts without a `Db` and the storage tools report that storage is unavailable. Mimir runs the same release asset, `cartographer-<platform>`, that way.
 - **Graph queries are a bounded BFS** — `walk_import_graph` expands dependencies (what a file imports) and dependents (what imports it) one hop per query until `max_depth` / `max_results`.
-- **Full-text search is BM25 in SurrealDB** — `cart_file.searchable` holds `"<file_path> <symbol_names>"` and is indexed with the `cart_analyzer` analyzer; `search_files` queries it with `@1@` and ranks by `search::score(1)`.
-- **Symbols store JSON** — `cart_file.symbols` is a JSON string of `Symbol[]`, parsed at read time; `symbol_names` is the space-separated clean text that feeds `searchable`.
+- **Full-text search is FTS5 with BM25** — `file_search.searchable` holds the words of the file path and of each symbol name, already cut by `search_words` (at punctuation, `_` included, and where letters meet digits; camelCase is not split). The `unicode61` tokenizer only lowercases them. A query is cut the same way and every word must match.
+- **Symbols store JSON** — `files.symbols` is a JSON string of `Symbol[]`, parsed at read time.
+- **Import edges are unique per source, target and specifier** — the parser can emit several (`import type { A } from "./a"` beside `import { b } from "./a"`); `replace_imports` merges them into one row with the symbols of each. Edges name files by path with no foreign key, because an edge is stored before its target is indexed and must survive the target being re-upserted.
 - **Only relative/local imports are resolved** — bare specifiers (npm packages), external Rust crates, and Ruby gems are intentionally skipped. Rust `use` paths resolve only when they start with `crate`, `self` or `super`.
 - **Built-in grammars are statically linked** — TS/TSX, JS/JSX, Rust, Ruby, and Elixir ship in the binary with hand-written extractors; they stay authoritative for their extensions unless a host grammar's manifest explicitly claims one.
 - **Host grammars load at runtime, from the user's data dir only** — `~/.cartographer/grammars/<name>/` with a `tree-sitter build` `.so`, `language.json`, and `tags.scm` / `imports.scm`. Loaded via `libloading` after an ABI check, extracted with queries rather than code. Never load a shared library from a path inside the project being indexed: `dlopen` runs arbitrary code.
@@ -90,5 +91,5 @@ Agent query → db/graph.rs (graph walk) → RelevantFile[]
 - **Language:** Rust (2021 edition)
 - **MCP SDK:** rmcp 1.2 with `#[tool_router]` / `#[tool_handler]` macros
 - **Async runtime:** Tokio
-- **Database:** SurrealDB 3 (`surrealdb` + `surrealdb-types` crates), optional via the `surrealdb` feature
-- **Testing:** `cargo test` — covers parser, resolver, registry, dynamic loading, query extraction, manifest discovery, DB queries, graph walks. The dynamic-grammar tests compile `tests/fixtures/grammars/tiny` with `cc` and skip (loudly) when no C compiler is installed.
+- **Database:** SQLite through `rusqlite` 0.43 (`bundled`, which compiles SQLite in with FTS5)
+- **Testing:** `cargo test` — covers parser, resolver, registry, dynamic loading, query extraction, manifest discovery, the store (`src/db/*_tests.rs`, each test on its own file in a temporary directory), indexing a project on disk into a store (`src/indexer_tests.rs`), and the hooks answering from one (`src/hooks_tests.rs`). No test needs an external service. The dynamic-grammar tests compile `tests/fixtures/grammars/tiny` with `cc` and skip (loudly) when no C compiler is installed.

@@ -79,7 +79,7 @@ pub fn diff_git_status(
 // Full index
 // ============================================================================
 
-pub async fn full_index(
+pub fn full_index(
     db: &Db,
     registry: &LanguageRegistry,
     project: &str,
@@ -90,14 +90,14 @@ pub async fn full_index(
     let mut skipped = 0;
 
     for file_path in &files {
-        match index_single_file(db, registry, project, file_path).await {
+        match index_single_file(db, registry, project, file_path) {
             Ok(()) => indexed += 1,
             Err(_) => skipped += 1,
         }
     }
 
     let status = get_current_git_status(registry, project_root);
-    save_git_status(db, project, &status).await?;
+    save_git_status(db, project, &status)?;
 
     Ok((indexed, skipped))
 }
@@ -106,7 +106,7 @@ pub async fn full_index(
 // Incremental index
 // ============================================================================
 
-pub async fn incremental_index(
+pub fn incremental_index(
     db: &Db,
     registry: &LanguageRegistry,
     project: &str,
@@ -117,18 +117,18 @@ pub async fn incremental_index(
     let mut removed = 0;
 
     for file_path in deleted {
-        remove_file(db, project, file_path).await?;
+        remove_file(db, project, file_path)?;
         removed += 1;
     }
 
     for file_path in modified {
         if !Path::new(file_path).exists() {
-            remove_file(db, project, file_path).await?;
+            remove_file(db, project, file_path)?;
             removed += 1;
             continue;
         }
 
-        match index_single_file(db, registry, project, file_path).await {
+        match index_single_file(db, registry, project, file_path) {
             Ok(()) => indexed += 1,
             Err(e) => {
                 tracing::warn!("Failed to index {file_path}: {e}");
@@ -143,7 +143,7 @@ pub async fn incremental_index(
 // Single file index
 // ============================================================================
 
-pub async fn index_single_file(
+pub fn index_single_file(
     db: &Db,
     registry: &LanguageRegistry,
     project: &str,
@@ -151,7 +151,7 @@ pub async fn index_single_file(
 ) -> Result<(), String> {
     let hash = hash_file(file_path)?;
 
-    if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path).await {
+    if let Ok(Some(existing_hash)) = get_file_hash(db, project, file_path) {
         if existing_hash == hash {
             return Ok(());
         }
@@ -165,9 +165,8 @@ pub async fn index_single_file(
         &result.language,
         &result.symbols,
         &hash,
-    )
-    .await?;
-    replace_imports(db, project, file_path, &result.imports).await?;
+    )?;
+    replace_imports(db, project, file_path, &result.imports)?;
     Ok(())
 }
 
@@ -206,3 +205,7 @@ fn walk_recursive(registry: &LanguageRegistry, dir: &Path, files: &mut Vec<Strin
         }
     }
 }
+
+#[cfg(test)]
+#[path = "indexer_tests.rs"]
+mod tests;

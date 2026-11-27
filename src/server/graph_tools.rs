@@ -26,8 +26,7 @@ impl CartographerServer {
             if entry.starts_with('/') {
                 resolved_paths.push(entry.clone());
             } else {
-                let results = self
-                    .run_async(search_files(db, &input.project, entry, 5))
+                let results = search_files(db, &input.project, entry, 5)
                     .map_err(|e| McpError::internal_error(e, None))?;
                 for (path, _) in results {
                     resolved_paths.push(path);
@@ -44,15 +43,14 @@ impl CartographerServer {
         let max_depth = input.max_depth.unwrap_or(DEFAULT_MAX_DEPTH);
         let max_results = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
 
-        let files = self
-            .run_async(walk_import_graph(
-                db,
-                &input.project,
-                &resolved_paths,
-                Some(max_depth),
-                Some(max_results),
-            ))
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let files = walk_import_graph(
+            db,
+            &input.project,
+            &resolved_paths,
+            Some(max_depth),
+            Some(max_results),
+        )
+        .map_err(|e| McpError::internal_error(e, None))?;
 
         #[derive(serde::Serialize)]
         struct QueryOut {
@@ -87,16 +85,13 @@ impl CartographerServer {
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
-        let total_files = self
-            .run_async(get_file_count(db, &input.project))
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let total_files =
+            get_file_count(db, &input.project).map_err(|e| McpError::internal_error(e, None))?;
 
-        let import_count = self
-            .run_async(get_import_count(db, &input.project))
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let import_count =
+            get_import_count(db, &input.project).map_err(|e| McpError::internal_error(e, None))?;
 
-        let languages = self
-            .run_async(get_language_counts(db, &input.project))
+        let languages = get_language_counts(db, &input.project)
             .map_err(|e| McpError::internal_error(e, None))?;
 
         #[derive(serde::Serialize)]
@@ -149,8 +144,7 @@ impl CartographerServer {
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
         let limit = input.limit.unwrap_or(10);
-        let results = self
-            .run_async(search_files(db, &input.project, &input.query, limit))
+        let results = search_files(db, &input.project, &input.query, limit)
             .map_err(|e| McpError::internal_error(e, None))?;
 
         if results.is_empty() {
@@ -198,8 +192,7 @@ impl CartographerServer {
         Parameters(input): Parameters<FileInfoInput>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
-        let detail = self
-            .run_async(get_file_detail(db, &input.project, &input.file_path))
+        let detail = get_file_detail(db, &input.project, &input.file_path)
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let detail = match detail {
@@ -276,9 +269,8 @@ impl CartographerServer {
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.require_db()?;
-        let cycles = self
-            .run_async(find_cycles(db, &input.project))
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let cycles =
+            find_cycles(db, &input.project).map_err(|e| McpError::internal_error(e, None))?;
 
         if cycles.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(

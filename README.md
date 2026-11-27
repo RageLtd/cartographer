@@ -4,12 +4,12 @@ Codebase structure mapping MCP server — because your agent shouldn't have to r
 
 ## Overview
 
-Cartographer is an MCP server that builds and maintains an import graph of your codebase using Tree-sitter AST parsing. It stores file metadata and import edges in SurrealDB, then answers graph queries with a bounded breadth-first walk over the edges. Storage is optional at build time: without it, Cartographer is a pure parser (`--parse-only`) and something else — such as mimir-acp — owns the graph.
+Cartographer is an MCP server that builds and maintains an import graph of your codebase using Tree-sitter AST parsing. It stores file metadata and import edges in a SQLite file on your machine, then answers graph queries with a bounded breadth-first walk over the edges. It needs no database server. Started with `--parse-only` it is a pure parser, and something else — such as mimir — owns the graph.
 
 Designed to complement [Goldfish](https://github.com/RageLtd/Goldfish) — Goldfish remembers what you *did*, Cartographer maps what *exists*.
 
 ```
-File path → Tree-sitter AST parse → Store imports/symbols in SurrealDB
+File path → Tree-sitter AST parse → Store imports/symbols in the SQLite file
                                               │
 Agent writes/edits → git status diff → Re-parse changed files
                                               │
@@ -141,8 +141,8 @@ Cartographer hooks into Claude Code sessions to provide structural context autom
 The binary doubles as both an MCP server and a CLI for hooks:
 
 ```bash
-cartographer                # Start MCP server (stdio transport, needs SurrealDB)
-cartographer --parse-only    # Start MCP server without a database (parsing tools only)
+cartographer                # Start MCP server (stdio transport, index in ~/.cartographer)
+cartographer --parse-only    # Start MCP server without opening the index (parsing tools only)
 cartographer grammars        # List built-in + host grammars; exit 1 if a host grammar fails to load
 cartographer parse <file>    # Parse one file with every loaded grammar; print imports + symbols as JSON
 cartographer hook:context    # SessionStart hook
@@ -155,23 +155,24 @@ cartographer hook:post-compact # PostCompact hook
 
 ## What It Stores
 
-A minimal import map in SurrealDB — no embeddings, no vectors. The connection comes from `SURREAL_URL`, `SURREAL_USER`, `SURREAL_PASS`, `SURREAL_NS`, `SURREAL_DB` (defaults: `localhost:8001`, `root`, `mimir`/`mimir`), and the schema is defined idempotently on connect:
+A minimal import map in one SQLite file — no embeddings, no vectors. The file is `~/.cartographer/cartographer.db`, or `$CARTOGRAPHER_HOME/cartographer.db` when that variable is set. Cartographer creates it on first use; nothing else has to be installed or running. The MCP server and the hooks all read the same file.
 
-- **cart_file**: `(project, file_path, language, symbols, symbol_names, content_hash, last_parsed_epoch, searchable)` — `symbols` is a JSON string of `Symbol[]`; `searchable` is `"<file_path> <symbol_names>"` under a BM25 full-text index
-- **cart_import**: `(project, source_path, target_path, specifier, symbols, updated_at_epoch)`
-- **cart_git_state**: `(project, last_status, updated_at_epoch)` — for change detection
+- **files**: `(project, file_path, language, symbols, content_hash, last_parsed_epoch)` — `symbols` is a JSON string of `Symbol[]`
+- **imports**: `(project, source_path, target_path, specifier, symbols, updated_at_epoch)` — one row per source, target and specifier. Imports that share all three are stored as one edge carrying the symbols of each.
+- **git_state**: `(project, last_status, updated_at_epoch)` — for change detection
+- **file_search**: a full-text (FTS5) table over each file's path and symbol names
 
-Graph queries are a breadth-first walk over `cart_import`, one query per hop in each direction, bounded by depth and result count. Search is SurrealDB full-text (`@1@`, ranked by `search::score`).
+Graph queries are a breadth-first walk over `imports`, one query per hop in each direction, bounded by depth and result count.
 
-### Building without storage
+Search cuts names into words at punctuation and wherever letters meet digits, so `utf8_decode` is found by `utf`, `8` or `decode`. Every word of a query must match, case is ignored, and results are ranked by BM25.
 
-```bash
-cargo build --no-default-features
-```
+The file is a cache of what the parser found. A file written under a different schema version is emptied when it is opened, and `/carto:index` fills it again.
 
-drops the `surrealdb` dependency entirely. The binary then always runs in `--parse-only` mode: `cartographer_parse_file`, `cartographer_index_project` and `cartographer_detect_changes` parse and return results, while the graph, search and stats tools report that storage is unavailable.
+### Parse-only mode
 
-Every release ships both variants for each platform: `cartographer-<platform>` (full) and `cartographer-parse-only-<platform>` (no storage). The Claude Code plugin downloads the full one; mimir consumes the parse-only one and owns the graph itself.
+`cartographer --parse-only` starts the server without opening the index. `cartographer_parse_file`, `cartographer_index_project` and `cartographer_detect_changes` parse and return results, while the graph, search and stats tools report that storage is unavailable. Mimir runs Cartographer this way and keeps its own index.
+
+Every release ships one binary per platform, `cartographer-<platform>`.
 
 ## Development
 
@@ -186,5 +187,5 @@ cargo test               # Run all tests
 
 - **Language:** Rust (2021 edition)
 - **MCP SDK:** rmcp with `#[tool_router]` / `#[tool_handler]` macros
-- **Database:** SurrealDB 3 over WebSocket (external server), optional via the default `surrealdb` Cargo feature
+- **Database:** SQLite, compiled into the binary (`rusqlite` with the `bundled` feature)
 - **Tree-sitter:** 0.27 runtime. Six grammars compiled in; others loaded at runtime from `~/.cartographer/grammars` (ABI 13–15)

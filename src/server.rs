@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::ErrorData as McpError;
-use tokio::runtime::Handle;
 
 use crate::db::client::Db;
 use crate::parser::registry::LanguageRegistry;
@@ -59,11 +58,6 @@ impl CartographerServer {
                 None,
             )
         })
-    }
-
-    /// Bridge sync tool handlers to async DB calls
-    fn run_async<F: std::future::Future>(&self, fut: F) -> F::Output {
-        tokio::task::block_in_place(|| Handle::current().block_on(fut))
     }
 }
 
