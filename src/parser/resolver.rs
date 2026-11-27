@@ -6,6 +6,12 @@ use super::rust_modules::{child_module_dir, child_module_file};
 
 const TS_JS_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs"];
 
+/// TypeScript is imported by the name of the JavaScript it compiles to, so a
+/// specifier ending in the first extension may mean a source file ending in
+/// one of the others. The order is the one the TypeScript compiler tries.
+const TS_SOURCES_OF_JS_EXTENSION: &[(&str, &[&str])] =
+    &[(".js", &[".ts", ".tsx"]), (".jsx", &[".tsx"])];
+
 pub fn is_relative_import(specifier: &str) -> bool {
     specifier.starts_with("./") || specifier.starts_with("../")
 }
@@ -18,6 +24,12 @@ pub fn resolve_ts_js_import(specifier: &str, from_file: &str) -> Option<String> 
     let dir = Path::new(from_file).parent()?;
     let candidate = dir.join(specifier);
     let candidate = normalize_path(&candidate);
+
+    // The compiler looks for the TypeScript source before the file as written,
+    // so compiled output sitting beside its source never wins.
+    if let Some(source) = typescript_source_of(&candidate) {
+        return source.to_str().map(str::to_string);
+    }
 
     // Exact match with known extension
     for ext in TS_JS_EXTENSIONS {
@@ -43,6 +55,19 @@ pub fn resolve_ts_js_import(specifier: &str, from_file: &str) -> Option<String> 
     }
 
     None
+}
+
+fn typescript_source_of(candidate: &Path) -> Option<PathBuf> {
+    let written = candidate.to_str()?;
+    TS_SOURCES_OF_JS_EXTENSION
+        .iter()
+        .find_map(|(js_ext, ts_exts)| {
+            let stem = written.strip_suffix(js_ext)?;
+            ts_exts
+                .iter()
+                .map(|ts_ext| PathBuf::from(format!("{stem}{ts_ext}")))
+                .find(|source| source.is_file())
+        })
 }
 
 pub fn resolve_rust_mod_decl(mod_name: &str, from_file: &str) -> Option<String> {
@@ -388,6 +413,58 @@ mod tests {
     fn test_bare_import_returns_none() {
         let result = resolve_ts_js_import("lodash", "/some/file.ts");
         assert!(result.is_none());
+    }
+
+    /// Resolves `specifier` from `src/index.ts` in a directory holding `files`,
+    /// returning the target relative to `src/`.
+    fn resolve_among(files: &[&str], specifier: &str) -> Option<String> {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        for file in files {
+            fs::write(src.join(file), "").unwrap();
+        }
+        let from_file = src.join("index.ts");
+        fs::write(&from_file, "").unwrap();
+
+        let resolved = resolve_ts_js_import(specifier, from_file.to_str().unwrap())?;
+        let relative = Path::new(&resolved).strip_prefix(&src).unwrap();
+        Some(relative.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn test_js_specifier_resolves_to_typescript_source() {
+        assert_eq!(
+            resolve_among(&["utils.ts"], "./utils.js").as_deref(),
+            Some("utils.ts")
+        );
+        assert_eq!(
+            resolve_among(&["view.tsx"], "./view.js").as_deref(),
+            Some("view.tsx")
+        );
+        assert_eq!(
+            resolve_among(&["Button.tsx"], "./Button.jsx").as_deref(),
+            Some("Button.tsx")
+        );
+    }
+
+    #[test]
+    fn test_js_specifier_prefers_typescript_source_over_compiled_output() {
+        assert_eq!(
+            resolve_among(&["utils.ts", "utils.js"], "./utils.js").as_deref(),
+            Some("utils.ts")
+        );
+    }
+
+    #[test]
+    fn test_js_specifier_without_typescript_source_resolves_as_written() {
+        assert_eq!(
+            resolve_among(&["utils.js"], "./utils.js").as_deref(),
+            Some("utils.js")
+        );
+        assert_eq!(resolve_among(&[], "./utils.js"), None);
+        // `.mjs` has no TypeScript source this resolver knows of.
+        assert_eq!(resolve_among(&["utils.ts"], "./utils.mjs"), None);
     }
 
     #[test]
