@@ -262,6 +262,28 @@ fn an_imported_symbol_exported_again_is_passed_on() {
     assert_eq!(other.re_exported_as, names(&["other"]));
 }
 
+#[test]
+fn an_imported_symbol_exported_as_the_default_is_passed_on_as_default() {
+    let dir = project(&[
+        (
+            "src/main.ts",
+            "import { helper } from \"./shared\";\n\nexport default helper;\n",
+        ),
+        (
+            "src/other.ts",
+            "import { other } from \"./shared\";\n\nexport default other;\n",
+        ),
+    ]);
+
+    let passed_on = uses(&dir, "src/main.ts", SHARED, "helper");
+    assert_eq!(passed_on.lines, vec![1, 3]);
+    assert_eq!(passed_on.re_exported_as, names(&["default"]));
+
+    // A default export of something else passes nothing on.
+    let not_passed_on = uses(&dir, "src/other.ts", SHARED, "helper");
+    assert_eq!(not_passed_on.re_exported_as, Vec::<String>::new());
+}
+
 // ============================================================================
 // What is not answered
 // ============================================================================

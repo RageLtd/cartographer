@@ -201,13 +201,24 @@ fn names_bound_to(
                     }
                 }
             }
-            // `export * from "target"` passes on every named export, and not
-            // the default one. `export * as ns from` exports a namespace.
             None => {
+                // `export * from "target"` passes on every named export, and
+                // not the default one. `export * as ns from` exports a
+                // namespace, which is not followed.
                 let is_star = children.iter().any(|c| c.kind() == "*");
                 let as_namespace = children.iter().any(|c| c.kind() == "namespace_export");
                 if from_the_target && is_star && !as_namespace && symbol != DEFAULT_EXPORT {
                     names.re_exported_as.push(symbol.to_string());
+                }
+
+                // `export default local;` passes an imported name on as the
+                // file's default export.
+                let is_default = children.iter().any(|c| c.kind() == "default");
+                let exports_a_local = statement
+                    .child_by_field_name("value")
+                    .is_some_and(|v| v.kind() == "identifier" && names.locals.contains(&text(v)));
+                if is_default && exports_a_local {
+                    names.re_exported_as.push(DEFAULT_EXPORT.to_string());
                 }
             }
         }

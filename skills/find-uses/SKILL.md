@@ -46,11 +46,11 @@ Two other answers are possible, and they mean different things:
 - Renamed imports: `import { a as b }` counts uses of `b`
 - Namespace imports: `import * as ns` counts `ns.a`
 - Imports by workspace package name, such as `@scope/core/util`
-- Re-exports: a file that re-exports the symbol passes it on, under the same name or a new one, and the files importing from that file are searched too
+- Re-exports: a file that re-exports the symbol passes it on, under the same name or a new one, and the files importing from that file are searched too. This covers `export { a } from`, `export { a as b } from`, `export * from`, and an imported name exported again, including as the default (`export default a`)
 
 ## Limits
 - TypeScript and JavaScript only. A file in another language is refused
 - A use is matched by name inside a file that imports the symbol. If that file also declares a local variable of the same name, its uses are counted too
-- A symbol reached through a dynamic `import()` is not followed
+- A symbol reached through a dynamic `import()` is not followed, and neither is one reached through a namespace that is re-exported (`export * as ns from`, or `export { ns }` of an `import * as ns`)
 - Which files import which comes from the index, so run `cartographer_detect_changes` first if files have changed. The lines come from the files as they are on disk
 - Needs the index. In parse-only mode use `cartographer_uses_in_file`, which answers for one file at a time

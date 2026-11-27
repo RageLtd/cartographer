@@ -196,6 +196,30 @@ fn a_re_export_is_followed_to_the_files_that_import_from_it() {
 }
 
 #[test]
+fn a_symbol_re_exported_as_a_default_is_followed_to_its_importers() {
+    let project = indexed(&[
+        (SHARED, "export const helper = 1;\n"),
+        (
+            "src/wrapper.ts",
+            "import { helper } from \"./shared\";\n\nexport default helper;\n",
+        ),
+        (
+            "src/user.ts",
+            "import anything from \"./wrapper\";\n\nconsole.log(anything);\n",
+        ),
+    ]);
+
+    assert_eq!(
+        uses(&project, SHARED, "helper"),
+        vec![
+            used(SHARED, &[1]),
+            used("src/user.ts", &[1, 3]),
+            used("src/wrapper.ts", &[1, 3]),
+        ]
+    );
+}
+
+#[test]
 fn files_that_re_export_each_other_do_not_loop() {
     let project = indexed(&[
         (SHARED, "export const helper = 1;\n"),
