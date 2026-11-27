@@ -9,6 +9,7 @@ target/
 # `.claude/*` form: git cannot re-include a path whose parent directory is
 # excluded, so a bare `.claude` would make the negations below dead letters.
 .claude/*
+.mimir/plans
 !.claude/rules/
 !.claude/rules-lock.json
 !.claude/rules-check.mjs
