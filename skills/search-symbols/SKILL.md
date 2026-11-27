@@ -36,8 +36,8 @@ Find parser-related files:
 ## Results
 
 Each result includes:
-- **file_path**: Absolute path
-- **relative_path**: Path relative to project root
+- **filePath**: Absolute path
+- **relativePath**: Path relative to project root
 - **symbols**: All symbols defined in the file (with kind, visibility, doc comments)
 
 ## When to Use Grep Instead

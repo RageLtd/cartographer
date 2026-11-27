@@ -19,10 +19,10 @@ Walk the import graph from entry point files to find dependencies and dependents
 1. Ensure the project is indexed (use `cartographer_index_project` if needed)
 2. Call `cartographer_query` with:
    - `entry_points`: Array of file paths or search terms
-   - `max_depth`: How many levels to traverse (default: 3)
-   - `max_results`: Limit results (default: 50)
+   - `max_depth`: How many levels to traverse (default: 2)
+   - `max_results`: Limit results (default: 20)
 
-Entry points can be absolute paths OR search terms — the tool will resolve search terms via FTS.
+Entry points can be absolute paths OR search terms. An entry point that is not an absolute path is searched for in the index, and the walk starts from the files that match.
 
 ## Examples
 
@@ -41,7 +41,7 @@ Search by symbol name:
 
 Each result includes:
 - **path**: Relative path from project root
-- **reason**: Why this file was included (e.g., "imports src/types.rs")
+- **reason**: Why this file was included: `entry` (a file the walk started from), `dependency` (reached by following an import) or `dependent` (reached because it imports a file already found)
 - **depth**: How many import hops from the query file
 - **symbols**: Functions, types, and exports defined in the file
 
