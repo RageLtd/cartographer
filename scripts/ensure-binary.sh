@@ -57,17 +57,28 @@ echo "Installing ${BINARY_NAME} ${LATEST_TAG} (${PLATFORM})..."
 # Create install directory
 mkdir -p "${INSTALL_DIR}"
 
-# Download binary
+# Download beside the binary and move it into place only once it is whole, so
+# a failed download never replaces a working binary. -f makes curl fail on an
+# HTTP error; without it a 404 page would be saved as the binary.
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${ASSET_NAME}"
-curl -sL "${DOWNLOAD_URL}" -o "${INSTALL_DIR}/${BINARY_NAME}"
+# The process id keeps two runs apart: the SessionStart hook and the server
+# command can both be installing on a first session.
+DOWNLOADED="${INSTALL_DIR}/${BINARY_NAME}.download.$$"
+if ! curl -fsSL "${DOWNLOAD_URL}" -o "${DOWNLOADED}"; then
+  rm -f "${DOWNLOADED}"
+  echo "Failed to download ${BINARY_NAME} ${LATEST_TAG} from ${DOWNLOAD_URL}"
+  exit 1
+fi
 
 # Make executable
-chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+chmod +x "${DOWNLOADED}"
 
 # Clear macOS Gatekeeper quarantine if on Darwin
 if [ "${OS}" = "Darwin" ]; then
-  codesign --force --deep --sign - "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null || true
+  codesign --force --deep --sign - "${DOWNLOADED}" 2>/dev/null || true
 fi
+
+mv "${DOWNLOADED}" "${INSTALL_DIR}/${BINARY_NAME}"
 
 # Save version
 mkdir -p "$(dirname "${VERSION_FILE}")"

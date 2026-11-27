@@ -5,6 +5,10 @@
   "author": {
     "name": "RageLtd"
   },
-  "commands_dir": "../commands",
-  "skills_dir": "../skills"
+  "mcpServers": {
+    "cartographer": {
+      "command": "sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh"]
+    }
+  }
 }
